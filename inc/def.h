@@ -152,6 +152,7 @@ int NetLinkCheck_Api(int type);
 int NetModuleOper_Api(int type, int onOrOff);
 void SysPowerReBoot_Api(void);
 int wirelessGetSingnal_lib(void);
+void logMessage(const char *message);
 
 //file
 void folderFileDisplay(unsigned char *filePath);
@@ -159,7 +160,7 @@ int unzipDownFile(unsigned char *fileName);
 
 // mqtt
 void initMqttOs(void);
-int mQTTMainThread(char * param);
+int mQTTMainThread(char * param, int *singleRun);
 int deletetread();
 void disConnect(void);
 void splitStringPOS(unsigned char *extracted);
@@ -245,6 +246,18 @@ int fibo_thread_create(void *pvTaskCode, char *pcName, int usStackDepth, void *p
 */
 int wirelessPdpWriteParam_lib(char *apn, char *username, char *password);
 
+int getHour(void);
+int getMinute(void);
+int getSecond(void);
+
+
+#define LOG_MSG(msg) \
+    do { \
+        int h = getHour(); \
+        int m = getMinute(); \
+        int s = getSecond(); \
+        MAINLOG_L1("LOG  %s %02d.%02d.%02d\n", msg, h, m, s); \
+    } while(0)
 
 
 // ***********************************************************   Test Functions **************************************************************
@@ -292,3 +305,4 @@ void delFolder(void);
 void segmentScreed(void);
 
 #endif /* __DEF_H__ */
+

@@ -111,8 +111,6 @@ int GetCard()
 	return ret;
 }
 
-// test
-
 /*
 int GetTrackData(char *Inbuf )
 {

@@ -7,7 +7,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
+#include <MQTTClient.h>
+#include <MQTTFreeRTOS.h> 
 #include "../inc/def.h"
 #include "../inc/tms_md5.h"
 #include "../inc/tms_tms.h"
@@ -22,6 +23,29 @@
 #include <struct.h>
 #include <poslib.h>
 #include <cJSON.h>
+
+// We will capture the real function pointers for AppPlayTip and Beep_Api
+// before the macro in the header redirects those names. To be safe, if the
+// header already defines macros, undef them here so we can take the real
+// addresses. After we capture pointers, the header macros will cause other
+// compilation units to call our wrappers instead.
+#ifdef AppPlayTip
+#undef AppPlayTip
+#endif
+#ifdef Beep_Api
+#undef Beep_Api
+#endif
+
+// function pointer to original implementations (populated from real symbols)
+static void (*real_AppPlayTip)(char *msg) = NULL;
+
+// initialize real function pointer for AppPlayTip at load-time. We do not
+// capture Beep_Api here because that symbol is declared in poslib.h and
+// creating/undefining macros across headers is fragile. Beep wrapper will call
+// poslib's Beep_Api directly when audible.
+static void __attribute__((constructor)) init_real_sound_ptrs(void) {
+	real_AppPlayTip = (void(*)(char *))AppPlayTip;
+}
 
 static unsigned char *t_sBuf = NULL;
 static unsigned char *t_rBuf = NULL;
@@ -63,6 +87,10 @@ char g_merchant_id_nobu[128] = {0};
 char g_external_store_id[128] = {0};
 char g_aisino_title[128] = {0};
 
+// int getHour(void)   { return 11; }
+// int getMinute(void) { return 10; }
+// int getSecond(void) { return 52; }
+
 const char *pszTitle = "Menu";
 // daftar text menu function
 const char *pszItems[] = {
@@ -85,147 +113,403 @@ const func_ptr menu_functions_list[] = {
 	downloadUpdate,
 };
 
-void CardNFC(const char *partnerReferenceNo, const int amount) 
+void CardNFC(const char *partnerReferenceNo, const int amount, const char *invoiceUrl) 
 {
-	char  *response = (char *)calloc(RECVPACKLEN, sizeof(char));
-	MAINLOG_L1("saya disini cardnfc ");
-	// get serial number
-	int fileLength = 0;
-	char *serialNumber = (char*)calloc(2048, sizeof(char));
-	fileLength = GetFileSize_Api("/ext/serial.txt");
-	int readFileReturn = ReadFile_Api("/ext/serial.txt", serialNumber, 0, &fileLength);
+    char  *response = (char *)calloc(RECVPACKLEN, sizeof(char));
+    // char tempAmount[20] = {0};
+    // sprintf(tempAmount, "%d", amount);
+    // get serial number
+    int fileLength = 0;
+    char *serialNumber = (char*)calloc(2048, sizeof(char));
+    fileLength = GetFileSize_Api("/ext/serial.txt");
+    int readFileReturn = ReadFile_Api("/ext/serial.txt", serialNumber, 0, &fileLength);
 
-	MAINLOG_L1("Serial numbernya = %s", serialNumber);
-	
-	if (readFileReturn == 3) {
-		free(serialNumber);
-		free(response);
-		ScrCls_Api();
-		ScrDisp_Api(LINE1, 0, "Tidak Ada Serial Number Harap ", CDISP);
-		ScrDisp_Api(LINE2, 0, "Sync Terlebih Dahulu", CDISP);
-		WaitEnterAndEscKey_Api(12);
-		return;
-	}
+    MAINLOG_L1("Serial numbernya = %s", serialNumber);
+    
+    if (readFileReturn == 3) {
+        free(serialNumber);
+        free(response);
+        ScrCls_Api();
+        ScrDisp_Api(LINE1, 0, "Tidak Ada Serial Number Harap ", CDISP);
+        ScrDisp_Api(LINE2, 0, "Sync Terlebih Dahulu", CDISP);
+        WaitEnterAndEscKey_Api(12);
+        return;
+    }
 
-	// int amount = 1000;
+    char tempAmount[20] = {0};
+    sprintf(tempAmount, "%d", amount);
 
-	char tempAmount[20] = {0};
-	sprintf(tempAmount, "%d", amount);
+    char* data = (char *)calloc(513, sizeof(char));
+    int data_len = 0;
+    int key = 0;
 
-	char* data = (char *)calloc(513, sizeof(char));
-	int data_len = 0;
-	int key = 0;
+    ScrCls_Api();
+    ScrDisp_Api(LINE4, 0, "Tap Your Card Here", CDISP);
+    ScrDisp_Api(LINE6, 0, "Amount:", CDISP);
+    ScrDisp_Api(LINE7, 0, tempAmount, CDISP);
+    KBFlush_Api();
 
-	ScrCls_Api();
-	ScrDisp_Api(LINE4, 0, "Tap Your Card Here", CDISP);
-	ScrDisp_Api(LINE6, 0, "Amount:", CDISP);
-	ScrDisp_Api(LINE7, 0, tempAmount, CDISP);
-	KBFlush_Api();
+    while (1) {
+        key = GetKey_Api();
+        if (key == ESC || key == ENTER) break;
 
-	while (1) {
-		key = GetKey_Api();
-		// MAINLOG_L1("Pressed key = %d", key);
-		if (key == ESC || key == ENTER) break;
+        int check_card = PiccCheck();
+        if (check_card != 0x00) continue;
 
-		int check_card = PiccCheck();
-		if (check_card != 0x00) continue;
+        int ret = read_qris_cpm_data_using_picc(data, &data_len);
+        MAINLOG_L1("Data QR = %s", data);
+        MAINLOG_L1("Card NFC status: %d", ret);
 
-		int ret = read_qris_cpm_data_using_picc(data, &data_len);
-		MAINLOG_L1("Data QR = %s", data);
-		MAINLOG_L1("Card NFC status: %d", ret);
+        if (ret == 0) {
+            MAINLOG_L1("Card NFC data: %s", data);
+            MAINLOG_L1("Card NFC Length : %d", data_len);
 
-		// int ret = 0;
-		// strcpy(data, "hQVDUFYwMWFfTwegAAAGAiAgUAdxcmlzY3BtWgqTYARBMBIwhRAPXyAURUFTVE1BTiBOVVJVTCBISUtNQUhfLQRpZGVuX1AQdGVsOjA4NTc3MTg3ODAwMZ8lAlEBYwmfdAYxMjM0NTY=");
+            // Tembak API
+            int   response_length = 0;
+            const char *url       = "/transactions-services/nobu-cpm/create-payment";
 
-		if (ret == 0) {
-			MAINLOG_L1("Card NFC data: %s", data);
-			MAINLOG_L1("Card NFC Length : %d", data_len);
+            cJSON *body = cJSON_CreateObject();
+            cJSON_AddStringToObject(body, "qrContent", data);
+            cJSON_AddStringToObject(body, "serialNumber", serialNumber);
+            cJSON_AddStringToObject(body, "partnerReferenceNo", partnerReferenceNo);
+            cJSON_AddNumberToObject(body, "amount", amount);
+			cJSON_AddStringToObject(body, "invoiceUrl", invoiceUrl);
 
-			// Tembak api
-			int   response_length = 0;
-			const char *url       = "/transactions-services/nobu-cpm/create-payment";
+			MAINLOG_L1("INVOICE URL = %s", invoiceUrl);
 
-			MAINLOG_L1("Checkpoint 1");
+            memset(response, 0, sizeof(char) * RECVPACKLEN);
 
-			cJSON *body = cJSON_CreateObject();
-			cJSON_AddStringToObject(body, "qrContent", data);
-			cJSON_AddStringToObject(body, "serialNumber", serialNumber);
-			cJSON_AddStringToObject(body, "partnerReferenceNo", partnerReferenceNo);
-			cJSON_AddNumberToObject(body, "amount", amount);
+            int httpReturn = httpRequestJSON(&response_length, response, url, "POST", body);
+            cJSON_Delete(body);
 
-			char *payloadStr = cJSON_PrintUnformatted(body);
-			if (payloadStr != NULL) {
-				MAINLOG_L1("Payload JSON = %s", payloadStr);
-				free(payloadStr);
-			}
+            if (httpReturn != 0) {
+                MAINLOG_L1("Gagal create payment");
+                continue;
+            }
 
-			MAINLOG_L1("Checkpoint 2"); 
+            MAINLOG_L1("JSON to parse = %s", response);
+            cJSON *responseJSON = cJSON_Parse(response);
 
-			memset(response, 0, sizeof(char) * RECVPACKLEN);
+            if (responseJSON == NULL) {
+                MAINLOG_L1("Gagal parse response");
+                continue;
+            }
 
-			MAINLOG_L1("Checkpoint 3");
+            cJSON *invoiceUrl = cJSON_GetObjectItem(responseJSON, "invoiceURL");
+            cJSON *status    = cJSON_GetObjectItem(responseJSON, "status");
+            
+            if (invoiceUrl != NULL && invoiceUrl->valuestring != NULL 
+                && strcmp(invoiceUrl->valuestring, "null") != 0 
+                && strlen(invoiceUrl->valuestring) > 0) 
+            {
+                MAINLOG_L1("Invoice URL = %s", invoiceUrl->valuestring);
+				secscrOpen_lib();
+				secscrSetBackLightMode_lib(2);
+				secscrSetAttrib_lib(4, 1);
+				secscrCls_lib();
 
-			int httpReturn = httpRequestJSON(&response_length, response, url, "POST", body);
+				{
+					char amtWords[256] = {0};
+					const char *amtTok = tempAmount;
+					if (amtTok && strlen(amtTok) > 0) {
+						amountToWordsID(amtTok, amtWords);
+					}
+					
+					if (amtWords[0]) {
+						char sentence[384] = {0};
+						snprintf(sentence, sizeof(sentence), "%s rupiah", amtWords);
+						PlayTipIfAudible(sentence);
+					}
+				}
 
-			MAINLOG_L1("Checkpoint 4");
+				char amtClean[64] = {0};
+				char formattedNumber[20];
 
-			cJSON_Delete(body);
+                const char *amtSrc = tempAmount;
+				MAINLOG_L1("amtSrc: %s", amtSrc);
+                if (amtSrc) {
+                    int j = 0;
+                    for (int i = 0; amtSrc[i] != '\0' && j < (int)sizeof(amtClean)-1; i++) {
+                        if (amtSrc[i] >= '0' && amtSrc[i] <= '9') {
+                            amtClean[j++] = amtSrc[i];
+                        } else if (amtSrc[i] == '.' || amtSrc[i] == ',') {
+                            break; 
+                        }
+                    }
+                    if (j == 0) strcpy(amtClean, "0");
+                } else {
+                    strcpy(amtClean, "0");
+                }
 
-			MAINLOG_L1("Checkpoint 5");
+                formatRupiah(amtClean, formattedNumber);
 
-			if (httpReturn != 0) {
-				MAINLOG_L1("Gagal create payment");
-				continue;
-			}
+                size_t flen = strlen(formattedNumber);
+                if (flen >= 3) {
+                    char *tail = formattedNumber + flen - 3;
+                    if ((tail[0] == '.' || tail[0] == ',') && tail[1] == '0' && tail[2] == '0') {
+                        *tail = '\0';
+                    }
+                }
+				char successMsg[64];
+				char amountMsg[64];
+				char secDisplay[40];
+				MAINLOG_L1("formattedNumber: %s", formattedNumber);
+                // AppPlayTip("Payment Success");
+                int qrRet = QREncodeString(invoiceUrl->valuestring, 3, 3, QRBMP, 3);
+                if (qrRet == 0) {
+                    ScrCls_Api();  
+					MAINLOG_L1("masuk qrRet");
+					snprintf(successMsg, sizeof(successMsg), "Payment Success ");
+					snprintf(amountMsg, sizeof(amountMsg), "Rp. %s", formattedNumber);
+					ScrDisp_Api(LINE1, 0, successMsg, CDISP);
+					ScrDisp_Api(LINE2, 0, amountMsg, CDISP);
+					secscrCls_lib();
+					snprintf(secDisplay, sizeof(secDisplay), "Rp. %s", formattedNumber);
+					secscrPrint_lib(0, 0, 0, secDisplay);
+                    ScrDisp_Api(LINE4, 0, "E-Receipt", CDISP);        
+                    ScrDispImage_Api(QRBMP, 40, 70);         
 
-			MAINLOG_L1("JSON to parse = %s", response);
-			cJSON *responseJSON = cJSON_Parse(response);
+                    for (int i = 30; i > 0; i--) {
+                        char buf[4];
+                        if (i >= 10) {
+                            buf[0] = '0' + (i / 10);
+                            buf[1] = '0' + (i % 10);
+                            buf[2] = '\0';
+                        } else {
+                            buf[0] = '0' + i;
+                            buf[1] = '\0';
+                        }
+                        ScrDisp_Api(LINE3, 0, "          ", CDISP);  // clear
+                        ScrDisp_Api(LINE3, 0, buf, CDISP);            // countdown
+						int key = GetKey_Api();
+						if (key == ESC || key == ENTER) {
+							MAINLOG_L1("QR closed early by key: %d", key);
+							break;
+						}
+                        Delay_Api(1000);
+                    }
+					secscrCls_lib();
+                    DispMainFace();
+                }
+                cJSON_Delete(responseJSON);
+                break; // selesai setelah tampil QR
+            }
 
-			MAINLOG_L1("Checkpoint 6");
+            if (status != NULL && strcmp(status->valuestring, "OK") == 0) {
+                ScrCls_Api();
+                ScrDisp_Api(LINE6, 0, "Payment Received!", CDISP);
+                cJSON_Delete(responseJSON);
+                break;
+            }
 
-			if (responseJSON == NULL) {
-				MAINLOG_L1("Gagal parse response");
-				continue;
-			}
+            if (status != NULL && strcmp(status->valuestring, "TRY AGAIN") == 0) {
+                ScrCls_Api();
+                ScrDisp_Api(LINE5, 0, "ERROR", CDISP);
+                ScrDisp_Api(LINE7, 0, "Please Restart NFC", CDISP);
+                ScrDisp_Api(LINE8, 0, "System!", CDISP);
+                cJSON_Delete(responseJSON);
+                break;
+            }
 
-			MAINLOG_L1("Checkpoint 7");
-
-			cJSON *status = cJSON_GetObjectItem(responseJSON, "status");
-			cJSON *message = cJSON_GetObjectItem(responseJSON, "message");
-
-			MAINLOG_L1("Checkpoint 8");
-
-			if (status == NULL) {
-				MAINLOG_L1("status null");
-			}
-
-			MAINLOG_L1("status = %s", status->valuestring);
-
-			if (status != NULL && strcmp(status->valuestring, "OK") == 0) {
-				ScrCls_Api();
-				ScrDisp_Api(LINE6, 0, "Payment Received!", CDISP);
-				// WaitEnterAndEscKey_Api(12);
-				break;
-			}
-
-			if (message != NULL && strcmp(message->valuestring, "TRY AGAIN") == 0) {
-				ScrCls_Api();
-				ScrDisp_Api(LINE5, 0, "ERROR", CDISP);
-				ScrDisp_Api(LINE7, 0, "Please Restart NFC", CDISP);
-				ScrDisp_Api(LINE8, 0, "System!", CDISP);
-				break;
-			}
-
-			MAINLOG_L1("Checkpoint 9");
-		} else {
-			MAINLOG_L1("Card NFC error: %d", ret);
-		}
-	}
-	
-	free(response);
-	free(data);
-	free(serialNumber);
+            cJSON_Delete(responseJSON);
+        } else {
+			secscrCls_lib();
+            MAINLOG_L1("Card NFC error: %d", ret);
+        }
+    }
+    
+    free(response);
+    free(data);
+    free(serialNumber);
 }
+
+// void CardNFC(const char *partnerReferenceNo, const int amount) 
+// {
+// 	char  *response = (char *)calloc(RECVPACKLEN, sizeof(char));
+	
+// 	// get serial number
+// 	int fileLength = 0;
+// 	char *serialNumber = (char*)calloc(2048, sizeof(char));
+// 	fileLength = GetFileSize_Api("/ext/serial.txt");
+// 	int readFileReturn = ReadFile_Api("/ext/serial.txt", serialNumber, 0, &fileLength);
+
+// 	MAINLOG_L1("Serial numbernya = %s", serialNumber);
+	
+// 	if (readFileReturn == 3) {
+// 		free(serialNumber);
+// 		free(response);
+// 		ScrCls_Api();
+// 		ScrDisp_Api(LINE1, 0, "Tidak Ada Serial Number Harap ", CDISP);
+// 		ScrDisp_Api(LINE2, 0, "Sync Terlebih Dahulu", CDISP);
+// 		WaitEnterAndEscKey_Api(12);
+// 		return;
+// 	}
+
+// 	// int amount = 1000;
+
+// 	char tempAmount[20] = {0};
+// 	sprintf(tempAmount, "%d", amount);
+
+// 	char* data = (char *)calloc(513, sizeof(char));
+// 	int data_len = 0;
+// 	int key = 0;
+
+// 	ScrCls_Api();
+// 	ScrDisp_Api(LINE4, 0, "Tap Your Card Here", CDISP);
+// 	ScrDisp_Api(LINE6, 0, "Amount:", CDISP);
+// 	ScrDisp_Api(LINE7, 0, tempAmount, CDISP);
+// 	KBFlush_Api();
+	
+
+// 	int mqttConnect = 0;
+
+// 	while (1) {
+		
+// 		// if (mqttConnect == 0) {
+//        	//  	mQTTMainThread("payment-pos", 1);  
+// 		// 	MAINLOG_L1("MQTT Connect cardnfc");
+//         // 	mqttConnect = 1;
+//    		// }
+
+// 		key = GetKey_Api();
+// 		// MAINLOG_L1("Pressed key = %d", key);
+// 		if (key == ESC || key == ENTER) {
+// 			MAINLOG_L1("Tombol ESC atau ENTER ditekan, keluar loop");
+// 			break;
+// 		}
+
+// 		int check_card = PiccCheck();
+// 		if (check_card != 0x00) {
+//        		 continue;
+// 		}
+
+// 		int ret = read_qris_cpm_data_using_picc(data, &data_len);
+// 		MAINLOG_L1("Data QR = %s", data);
+// 		MAINLOG_L1("Card NFC status: %d", ret);
+
+// 		// int ret = 0;
+// 		// strcpy(data, "hQVDUFYwMWFfTwegAAAGAiAgUAdxcmlzY3BtWgqTYARBMBIwhRAPXyAURUFTVE1BTiBOVVJVTCBISUtNQUhfLQRpZGVuX1AQdGVsOjA4NTc3MTg3ODAwMZ8lAlEBYwmfdAYxMjM0NTY=");
+
+// 		if (ret == 0) {
+// 			MAINLOG_L1("Card NFC data: %s", data);
+// 			MAINLOG_L1("Card NFC Length : %d", data_len);
+
+// 			// Tembak api
+// 			int   response_length = 0;
+// 			const char *url       = "/transactions-services/nobu-cpm/create-payment";
+
+// 			MAINLOG_L1("Checkpoint 1");
+
+// 			cJSON *body = cJSON_CreateObject();
+// 			cJSON_AddStringToObject(body, "qrContent", data);
+// 			cJSON_AddStringToObject(body, "serialNumber", serialNumber);
+// 			cJSON_AddStringToObject(body, "partnerReferenceNo", partnerReferenceNo);
+// 			cJSON_AddNumberToObject(body, "amount", amount);
+
+// 			MAINLOG_L1("Checkpoint 2"); 
+
+// 			memset(response, 0, sizeof(char) * RECVPACKLEN);
+
+// 			MAINLOG_L1("Checkpoint 3");
+
+// 			int httpReturn = httpRequestJSON(&response_length, response, url, "POST", body);
+// 			MAINLOG_L1("HTTP return = %d", httpReturn);
+// 			MAINLOG_L1("Checkpoint 4");
+
+// 			cJSON_Delete(body);
+
+// 			MAINLOG_L1("Checkpoint 5");
+
+// 			if (httpReturn != 0) {
+// 				MAINLOG_L1("Gagal create payment");
+// 				continue;
+// 			}
+
+// 			MAINLOG_L1("JSON to parse = %s", response);
+// 			cJSON *responseJSON = cJSON_Parse(response);
+		
+// 			MAINLOG_L1("Checkpoint 6");
+
+// 			if (responseJSON == NULL) {
+// 				MAINLOG_L1("Gagal parse response");
+// 				continue;
+// 			}
+
+// 			MAINLOG_L1("Checkpoint 7");
+
+// 			// cJSON *status = cJSON_GetObjectItem(responseJSON, "status");
+// 			cJSON *message = cJSON_GetObjectItem(responseJSON, "message");
+// 			cJSON *invoiceUrl = cJSON_GetObjectItem(responseJSON, "invoiceUrl");
+// 			MAINLOG_L1("Checkpoint 8");
+
+// 			if (invoiceUrl == NULL || invoiceUrl->valuestring == NULL) {
+// 				invoiceUrl = cJSON_CreateString("https://www.google.com");
+// 			}
+
+// 			MAINLOG_L1("invoice url = %s", invoiceUrl->valuestring);
+
+// 			if(invoiceUrl != NULL && invoiceUrl->valuestring != NULL) {
+// 				// AppPlayTip("Payment Success");
+// 			    int ret = QREncodeString(invoiceUrl, 3, 3, QRBMP, 3);
+// 				if (ret == 0) {
+// 					ScrCls_Api(); 
+// 					ScrDisp_Api(LINE2, 0, "E-Receipt", CDISP);     
+// 					ScrDispImage_Api(QRBMP, 30, 65);         
+// 					for (int i = 30; i > 0; i--) {
+// 						char buf[4]; 
+// 						if (i >= 100) {	
+// 							buf[0] = '9';
+// 							buf[1] = '9';
+// 							buf[2] = '\0';
+// 						} else if (i >= 10) {
+// 							buf[0] = '0' + (i / 10);
+// 							buf[1] = '0' + (i % 10);
+// 							buf[2] = '\0';
+// 						} else {
+// 							buf[0] = '0' + i;
+// 							buf[1] = '\0';
+// 						}
+// 						ScrDisp_Api(LINE1, 0, "          ", CDISP);        // clear old number
+// 						ScrDisp_Api(LINE1, 0, buf, CDISP);                // show countdown
+// 						Delay_Api(1000);                                  // wait 1 second
+// 					}
+// 					DispMainFace();
+// 					break;
+// 				}
+				
+// 			}
+
+// 			if (message != NULL && strcmp(message->valuestring, "OK") == 0) {
+// 				// ScrCls_Api();
+// 				// ScrDisp_Api(LINE6, 0, "Payment Received!", CDISP);
+// 				// WaitEnterAndEscKey_Api(12);
+// 				MAINLOG_L1("response message OK");
+// 				break;
+// 				// continue;
+// 			}
+
+// 			if (message != NULL && strcmp(message->valuestring, "TRY AGAIN") == 0) {
+// 				ScrCls_Api();
+// 				ScrDisp_Api(LINE5, 0, "ERROR", CDISP);
+// 				ScrDisp_Api(LINE7, 0, "Please Restart NFC", CDISP);
+// 				ScrDisp_Api(LINE8, 0, "System!", CDISP);
+// 				break;
+// 			}
+
+// 			MAINLOG_L1("Checkpoint 9");
+// 		} else {
+// 			MAINLOG_L1("Card NFC error: %d", ret);
+// 			break;
+// 		}
+
+// 		MAINLOG_L1("Checkpoint 10");
+// 	}
+	
+// 		free(response);
+// 		free(data);
+// 		free(serialNumber);
+// }
+
 
 void QRCodeDisp()
 {
@@ -246,94 +530,150 @@ void QRCodeDisp()
 }
 
 
-int hitCallbackApi(const char *partnerReferenceNo, const char *callback, const char *serialNumber, char *responseOut)
+
+
+int hitCallbackApi(const char *partnerReferenceNo, const char *serialNumber, char *responseOut)
 {
+    static u8 packData[RECEIVE_BUF_SIZE] = {0};
     int packLen = 0;
-	cJSON *root = NULL;
     int ret = 0;
-    unsigned char packData[RECEIVE_BUF_SIZE] = {0};
 
-    MAINLOG_L1("hitCallbackApi START partnerReferenceNo=%s, callback=%s, serialNumber=%s", partnerReferenceNo, callback, serialNumber);
-	MAINLOG_L1("before create cJSON");
+    portClose_lib(10);
+    int portOpenRet = portOpen_lib(10, NULL);
+    Delay_Api(20);
+    MAINLOG_L1("portOpen_lib ret = %d", portOpenRet);
+    if (portOpenRet != 0) {
+        MAINLOG_L1("ERROR: gagal buka port");
+        return -1;
+    }
+    portFlushBuf_lib(10);
+    MAINLOG_L1("Port dibuka dan buffer di-flush");
 
-    root = cJSON_CreateObject();
-    if (!root) { MAINLOG_L1("ERROR: gagal create cJSON object"); return -1; }
-	MAINLOG_L1("Created cJSON object");
+    // ===== Connect ke server =====
+	memset(&tmsEntry, 0, sizeof(tmsEntry));
+	tmsEntry.protocol = PROTOCOL;
+	strcpy(tmsEntry.domain, DOMAIN);
+	strcpy(tmsEntry.port, PORT);
+	ret = dev_connect(&tmsEntry, 5);  // timeout 5 detik
+
+    if (ret != 0) {
+        MAINLOG_L1("ERROR: dev_connect gagal, ret = %d", ret);
+        dev_disconnect();
+        return -1;
+    }
+    MAINLOG_L1("dev_connect sukses");
+
+    // ===== Buat JSON request =====
+    cJSON *root = cJSON_CreateObject();
+    if (!root) {
+        MAINLOG_L1("ERROR: gagal create cJSON object");
+        dev_disconnect();
+        return -1;
+    }
+
     cJSON_AddStringToObject(root, "partnerReferenceNo", partnerReferenceNo);
-	MAINLOG_L1("Added partnerReferenceNo to cJSON = %s", partnerReferenceNo);
-    cJSON_AddStringToObject(root, "callback", callback);
-	MAINLOG_L1("Added callback to cJSON = %s", callback);
     cJSON_AddStringToObject(root, "serialNumber", serialNumber);
-	MAINLOG_L1("Added serialNumber to cJSON = %s", serialNumber);
 
     char *bodyStr = cJSON_PrintUnformatted(root);
     if (!bodyStr) {
-        MAINLOG_L1("ERROR: gagal create bodyStr dari cJSON");
+        MAINLOG_L1("ERROR: gagal print JSON");
         cJSON_Delete(root);
+        dev_disconnect();
         return -1;
     }
+
     int dataLen = strlen(bodyStr);
-    MAINLOG_L1("Body JSON = %s", bodyStr);
+    MAINLOG_L1("JSON Body = %s", bodyStr);
+    MAINLOG_L1("Data length = %d", dataLen);
 
-    int headerLen = snprintf((char *)packData,
-        sizeof(packData),
-        "POST /transactions-service/nobu-mpm/query-qris HTTP/1.1\r\n"
-        "Host: %s\r\n"
-        "User-Agent: Apache-HttpClient/4.3.5 (java 1.5)\r\n"
-        "Connection: Keep-Alive\r\n"
-        "Accept-Encoding: gzip,deflate\r\n"
-        "Content-Type: application/json\r\n"
-        "Content-Length: %d\r\n"
-        "\r\n",
-        DOMAIN,
-        dataLen);
+    // ===== Build HTTP Request =====
+    char urlPath[128];
+    sprintf(urlPath, "POST /transactions-services/nobu-mpm/query-qris");
 
-    if (headerLen < 0 || headerLen + dataLen >= sizeof(packData)) {
-        MAINLOG_L1("ERROR: headerLen invalid, headerLen=%d, dataLen=%d", headerLen, dataLen);
-        free(bodyStr);
-        cJSON_Delete(root);
-        return -1;
-    }
+    memset(packData, 0, sizeof(packData));
+    sprintf((char *)packData, "%s HTTP/1.1\r\n", urlPath);
+    sprintf((char *)(packData + strlen((char *)packData)), "Host: %s\r\n", DOMAIN);
+    strcat((char *)packData, "Connection: Keep-Alive\r\n");
+    strcat((char *)packData, "Content-Type: application/json\r\n");
+    sprintf((char *)(packData + strlen((char *)packData)), "Content-Length: %d\r\n", dataLen);
+    strcat((char *)packData, "User-Agent: Apache-HttpClient/4.3.5 (java 1.5)\r\n");
+    strcat((char *)packData, "Accept-Encoding: gzip,deflate\r\n\r\n");
+    memcpy(packData + strlen((char *)packData), bodyStr, dataLen);
 
-    memcpy(packData + headerLen, bodyStr, dataLen);
-    packData[headerLen + dataLen] = '\0';
-    MAINLOG_L1("Full request = %s", packData);
+    int headerLen = strlen((char *)packData);
+    packLen = headerLen + dataLen;
 
     free(bodyStr);
     cJSON_Delete(root);
 
-    packLen = headerLen + dataLen;
-    MAINLOG_L1("Total packLen = %d", packLen);
+    MAINLOG_L1("HTTP Request built, total length = %d", packLen);
+    MAINLOG_L1("Contents of packData before dev_send:\n%s", packData);
+    MAINLOG_L1("packLen being sent = %d", packLen);
 
+    // ===== Kirim request =====
     ret = dev_send(packData, packLen);
-    MAINLOG_L1("dev_send ret = %d", ret);
-    if (ret != 0) return ret;
-    
+    MAINLOG_L1("dev_send returned = %d", ret);
+    if (ret != 0) {
+        MAINLOG_L1("ERROR: dev_send failed, ret = %d", ret);
+        dev_disconnect();
+        return ret;
+    }
+
+    // ===== Terima response =====
     int recvLen = dev_recv(packData, RECEIVE_BUF_SIZE, 10);
-    MAINLOG_L1("dev_recv recvLen = %d", recvLen);
     if (recvLen <= 0) {
-        MAINLOG_L1("ERROR: tidak ada response dari server");
+        MAINLOG_L1("ERROR: dev_recv gagal, recvLen = %d", recvLen);
+        dev_disconnect();
         return -1;
     }
-    packData[recvLen] = '\0';
-    MAINLOG_L1("Raw response = %s", packData);
 
+    packData[recvLen] = '\0';
+    MAINLOG_L1("Full HTTP Response:\n%s", packData);
+
+    // ===== Copy JSON response =====
     char *json_start = strchr((char *)packData, '{');
     if (!json_start) {
-        MAINLOG_L1("ERROR: response tidak mengandung JSON");
+        MAINLOG_L1("ERROR: JSON response tidak ditemukan");
+        dev_disconnect();
         return -1;
     }
 
     strcpy(responseOut, json_start);
-    MAINLOG_L1("Final JSON response = %s", responseOut);
+    MAINLOG_L1("responseOut = %s", responseOut);
 
-    MAINLOG_L1("hitCallbackApi END sukses");
+	// ===== Parse JSON untuk cek status =====
+    cJSON *jsonResp = cJSON_Parse(json_start);
+    if (!jsonResp) {
+        MAINLOG_L1("ERROR: gagal parse JSON response");
+        dev_disconnect();
+        return -1;
+    }
+
+    cJSON *status = cJSON_GetObjectItem(jsonResp, "status");
+    if (!status || strcmp(status->valuestring, "success") != 0) {
+        // Jika status bukan "success", kembalikan error
+        cJSON_Delete(jsonResp);
+        dev_disconnect();
+        return -1;
+    }
+
+    cJSON_Delete(jsonResp);
+
+    // ===== Tutup koneksi =====
+    dev_disconnect();
     return 0;
 }
 
 
 void DispMainFace(void)
 {
+	if (G_sys_param.sound_level < 0) {
+        G_sys_param.sound_level = 0;
+        saveParam();
+    } else if (G_sys_param.sound_level > 5) {
+        G_sys_param.sound_level = 5;
+        saveParam();
+    }
     int fileLen = GetFileSize_Api("/ext/qr_static.txt");
     if (fileLen > 0) {
         int ret = ReadFile_Api("/ext/qr_static.txt", g_qr_static, 0, &fileLen);
@@ -367,55 +707,13 @@ void DispMainFace(void)
     } else {
         qrStr = g_qr_static[0] ? g_qr_static : "www.uruz.id";
         title = g_aisino_title[0] ? g_aisino_title : "URUZ TECH";
-        int ret = QREncodeString(qrStr, 3, 3, QRBMP, 2.9);
+		double qrSize = (strlen(qrStr) < 20) ? 4.8 : 2.9;
+        int ret = QREncodeString(qrStr, 3, 3, QRBMP, 3.4);
         ScrClsRam_Api();
         ScrDispRam_Api(LINE2, 0, title, CDISP);
-        ScrDispImage_Api(QRBMP, 60, 60);
-        ScrDispRam_Api(LINE9, 0, App_Msg.Version, CDISP);
-// 		ScrDisp_Api(10, 0, "[1] = Proses", CDISP);
+        ScrDispImage_Api(QRBMP, 75, 60);
+        ScrDispRam_Api(11, 0, App_Msg.Version, CDISP);
         ScrBrush_Api();
-
-// 		while (1) {
-// 			int key = GetKey_Api();
-
-// 			if (key == '1') {
-// 				char serialNumber[128] = {0};
-// 				int fileLenSerial = GetFileSize_Api("/ext/serial.txt");
-// 				ReadFile_Api("/ext/serial.txt", serialNumber, 0, &fileLenSerial);
-// 				MAINLOG_L1("Serial numbernya = %s", serialNumber);
-
-// 				const char *partnerReferenceNo = "SII-xxxx-openAPIV3"; 
-// 				const char *callback = "1"; 
-
-// 				char responseOut[RECVPACKLEN] = {0};
-// 				int cbRet = hitCallbackApi(partnerReferenceNo, callback, serialNumber, responseOut);
-
-// 				ScrDisp_Api(0, 0, cbRet == 0 ? "Callback sukses" : "Callback gagal", CDISP);
-// 				ScrDisp_Api(1, 0, responseOut, CDISP);
-
-// 				int timer = 30;
-// 				while (timer > 0) {
-// 					char timerStr[32];
-// 					sprintf(timerStr, "Tunggu %d detik...", timer);
-// 					ScrDisp_Api(2, 0, timerStr, CDISP);
-// 					ScrBrush_Api();
-// 					Delay_Api(1000);
-// 					timer--;
-// 				}
-// 				ScrClrLine_Api(0, 0);
-// 				ScrClrLine_Api(1, 1);
-// 				ScrClrLine_Api(2, 2);
-// 				ScrBrush_Api();
-// 				break;
-// }
-// 			if (key == ESC || key == ENTER) {
-// 				break;
-// 			}
-
-// 			Delay_Api(100); 
-// 		}
-
-// 		return 0;
 	}
 }
 
@@ -440,6 +738,211 @@ int WaitEvent(void)
 	return 0;
 }
 #define TIMEOUT -2
+
+
+
+
+#ifndef VOLUME_BAR_LINE
+  #ifdef LINE12
+    #define VOLUME_BAR_LINE LINE12
+  #elif defined(LINE11)
+    #define VOLUME_BAR_LINE LINE11
+  #elif defined(LINE10)
+    #define VOLUME_BAR_LINE LINE10
+  #else
+    #define VOLUME_BAR_LINE 10
+  #endif
+#endif
+
+#ifndef VOLUME_ICON_X
+  #define VOLUME_ICON_X 0     
+#endif
+#ifndef VOLUME_ICON_Y
+  #define VOLUME_ICON_Y 200   
+#endif
+
+#ifndef VOL_ICON0
+  #define VOL_ICON0 "VOL0.bmp"
+  #define VOL_ICON1 "VOL1.bmp"
+  #define VOL_ICON2 "VOL2.bmp"
+  #define VOL_ICON3 "VOL3.bmp"
+  #define VOL_ICON4 "VOL4.bmp"
+  #define VOL_ICON5 "VOL5.bmp"
+#endif
+
+#ifndef SCREEN_COLS
+	// Estimated character columns per line for centering; adjust if your device differs
+	#define SCREEN_COLS 32
+#endif
+
+#ifndef MENU_UP_TEXT
+  #define MENU_UP_TEXT   "^  Volume Up"
+#endif
+#ifndef MENU_DOWN_TEXT
+  #define MENU_DOWN_TEXT "v  Volume Down"
+#endif
+
+static int isArrowUpKey(int key) {
+    int match = 0;
+#ifdef UP
+    if (key == UP) match = 1;
+#endif
+#ifdef KEY_UP
+    if (key == KEY_UP) match = 1;
+#endif
+#ifdef VK_UP
+    if (key == VK_UP) match = 1;
+#endif
+    if (key == 0x26) match = 1;           
+    if (match) MAINLOG_L1("[VOL] isArrowUpKey matched key=%d (0x%02X)", key, key);
+    return match;
+}
+
+static int isArrowDownKey(int key) {
+    int match = 0;
+#ifdef DOWN
+    if (key == DOWN) match = 1;
+#endif
+#ifdef KEY_DOWN
+    if (key == KEY_DOWN) match = 1;
+#endif
+#ifdef VK_DOWN
+    if (key == VK_DOWN) match = 1;
+#endif
+    if (key == 0x28) match = 1;          
+    if (match) MAINLOG_L1("[VOL] isArrowDownKey matched key=%d (0x%02X)", key, key);
+    return match;
+}
+
+// static void showVolumeBar(void) {
+//     char line[64];
+//     char bar[8] = {0};
+//     int lvl = G_sys_param.sound_level;
+
+//     if (lvl < 0) lvl = 0;
+//     if (lvl > 5) lvl = 5;
+
+//     for (int i = 0; i < 5; ++i) {
+//         bar[i] = (i < lvl) ? '=' : '-';
+//     }
+
+//     const char *label;
+//     switch (lvl) {
+//         case 0: label = "Mute"; break;
+//         case 1: label = "Low";  break;
+//         case 2: label = "Low+"; break;
+//         case 3: label = "Med";  break;
+//         case 4: label = "High"; break;
+//         default: label = "Max"; break; // lvl=5
+//     }
+
+//     snprintf(line, sizeof(line), "Volume [%s] %d/5 %s", bar, lvl, label);
+
+//     ScrClrLine_Api(VOLUME_BAR_LINE, VOLUME_BAR_LINE);
+//     ScrDisp_Api(VOLUME_BAR_LINE, 0, line, CDISP);
+//     ScrBrush_Api();
+
+//     MAINLOG_L1("[VOL] showVolumeBar level=%d line='%s'", lvl, line);
+// }
+
+// Mute-aware wrapper: call the real AppPlayTip only when audible
+void PlayTipIfAudible(const char *msg) {
+	if (G_sys_param.sound_level > 0) {
+		if (real_AppPlayTip) real_AppPlayTip((char *)msg);
+		else MAINLOG_L1("[VOL] No real_AppPlayTip available, cannot play tip='%s'", msg);
+	} else {
+		MAINLOG_L1("[VOL] Muted, suppress tip='%s'", msg);
+	}
+}
+
+// Mute-aware wrapper for Beep
+void BeepIfAudible(int times) {
+	if (G_sys_param.sound_level > 0) {
+		// Call poslib's Beep_Api directly when audible. This assumes poslib
+		// provides Beep_Api(unsigned char) — most platforms do.
+		Beep_Api((unsigned char)times);
+	} else {
+		MAINLOG_L1("[VOL] Muted, suppress beep x%d", times);
+	}
+}
+
+static void showVolumeBar(void) {
+    char line[64];
+    char bar[8] = {0};
+    int lvl = G_sys_param.sound_level;
+    if (lvl < 0) lvl = 0;
+    if (lvl > 5) lvl = 5;
+    for (int i = 0; i < 5; ++i) {
+        bar[i] = (i < lvl) ? '=' : '-';
+    }
+    const char *label;
+    switch (lvl) {
+        case 0: label = "Mute"; break;
+        case 1: label = "Low";  break;
+        case 2: label = "Low+"; break;
+        case 3: label = "Med";  break;
+        case 4: label = "High"; break;
+        default: label = "Max"; break;
+    }
+    const char *icons[6] = { VOL_ICON0, VOL_ICON1, VOL_ICON2, VOL_ICON3, VOL_ICON4, VOL_ICON5 };
+    const char *icon = icons[lvl];
+    snprintf(line, sizeof(line), "Volume [%s] %d/5 %s", bar, lvl, label);
+	// Move down one line and center horizontally
+	int centerCol = 0;
+	int maxCols = SCREEN_COLS;
+	int len = (int)strlen(line);
+	if (len < maxCols) {
+		centerCol = (maxCols - len) / 2;
+		if (centerCol < 0) centerCol = 0;
+	}
+	ScrClrLine_Api(VOLUME_BAR_LINE + 1, VOLUME_BAR_LINE + 1);
+	ScrDisp_Api(VOLUME_BAR_LINE + 1, centerCol, line, CDISP);
+    int fsize = GetFileSize_Api(icon);
+    if (fsize > 0) {
+        ScrDispImage_Api(icon, VOLUME_ICON_X, VOLUME_ICON_Y);
+        MAINLOG_L1("[VOL] Icon '%s' shown lvl=%d", icon, lvl);
+    } else {
+        MAINLOG_L1("[VOL] Icon '%s' missing lvl=%d", icon, lvl);
+    }
+    ScrBrush_Api();
+    MAINLOG_L1("[VOL] showVolumeBar lvl=%d text='%s'", lvl, line);
+}
+
+static int handleVolumeHotkey(int key) {
+    int before = G_sys_param.sound_level;
+    int handled = 0;
+    if (isArrowUpKey(key)) {
+        if (G_sys_param.sound_level < 5) {
+            G_sys_param.sound_level++;
+            saveParam();
+            if (before == 0)
+                PlayTipIfAudible("Unmute");
+            else
+                PlayTipIfAudible("Volume up");
+            MAINLOG_L1("[VOL] UP before=%d after=%d", before, G_sys_param.sound_level);
+        } else {
+            PlayTipIfAudible("Max volume");
+            MAINLOG_L1("[VOL] UP at max=%d", before);
+        }
+        handled = 1;
+    } else if (isArrowDownKey(key)) {
+        if (G_sys_param.sound_level > 0) {
+            G_sys_param.sound_level--;
+            saveParam();
+            if (G_sys_param.sound_level == 0) {
+                MAINLOG_L1("[VOL] DOWN -> mute (before=%d)", before);
+            } else {
+                PlayTipIfAudible("Volume down");
+                MAINLOG_L1("[VOL] DOWN before=%d after=%d", before, G_sys_param.sound_level);
+            }
+        } else {
+            MAINLOG_L1("[VOL] DOWN already muted");
+        }
+        handled = 1;
+    }
+    if (handled) showVolumeBar();
+    return handled;
+}
 int ShowMenuItem(char *Title, const char *menu[], u8 ucLines, u8 ucStartKey, u8 ucEndKey, int IsShowX, u8 ucTimeOut)
 {
 	MAINLOG_L1("ucStartKey = %d", ucStartKey);
@@ -483,20 +986,44 @@ int ShowMenuItem(char *Title, const char *menu[], u8 ucLines, u8 ucStartKey, u8 
 			ScrDispRam_Api(Cur_Line++, 0, dispbuf, FDISP);
 		}
 
+		showVolumeBar();
+
 		ScrBrush_Api();
 		MAINLOG_L1("after ScrBrush_Api");
 		nkey = WaitAnyKey_Api(ucTimeOut);
 		MAINLOG_L1("WaitAnyKey_Api aa:%d", nkey);
-		switch (nkey)
-		{
-		case ESC:
-		case TIMEOUT:
-			return nkey;
-		default:
-			if ((nkey >= ucStartKey) && (nkey <= ucEndKey))
-				return nkey;
-			break;
-		}
+		if (handleVolumeHotkey(nkey)) {
+			MAINLOG_L1("[MENU] Volume hotkey consumed key=%d (0x%02X), kembali redraw menu", nkey, nkey);
+            continue;
+        }
+
+		if (nkey == ESC) {
+            MAINLOG_L1("[MENU] ESC ditekan, keluar menu");
+            return nkey;
+        }
+        if (nkey == TIMEOUT) {
+            MAINLOG_L1("[MENU] Timeout (-2), keluar menu");
+            return nkey;
+        }
+        if ((nkey >= ucStartKey) && (nkey <= ucEndKey)) {
+            MAINLOG_L1("[MENU] Pilih item angka=%d rentang=[%d..%d]", nkey, ucStartKey, ucEndKey);
+            return nkey;
+        }
+
+        if (nkey != 0) {
+            MAINLOG_L1("[MENU] Key tidak dikenali key=%d (0x%02X) diabaikan", nkey, nkey);
+        }
+
+		// switch (nkey)
+		// {
+		// case ESC:
+		// case TIMEOUT:
+		// 	return nkey;
+		// default:
+		// 	if ((nkey >= ucStartKey) && (nkey <= ucEndKey))
+		// 		return nkey;
+		// 	break;
+		// }
 	};
 }
 
@@ -555,6 +1082,39 @@ void remove_invalid_items_from_json(cJSON *json_array, const char *truth_values[
 			cJSON_DeleteItemFromArray(json_array, i);
 		}
 	}
+}
+
+// Handlers for main menu volume adjustments (added to main menu with arrow icons)
+static void VolumeUpFromMain(void) {
+	if (G_sys_param.sound_level >= 5) {
+		PlayTipIfAudible("Max volume");
+	} else {
+		int before = G_sys_param.sound_level;
+		G_sys_param.sound_level++;
+		saveParam();
+		if (before == 0)
+			PlayTipIfAudible("Unmute");
+		else
+			PlayTipIfAudible("Volume up");
+	}
+	showVolumeBar();
+}
+
+static void VolumeDownFromMain(void) {
+	if (G_sys_param.sound_level <= 0) {
+		MAINLOG_L1("[VOL] Already muted");
+		// optionally play a tip: PlayTipIfAudible("Muted"); but stay silent as per mute rule
+	} else {
+		G_sys_param.sound_level--;
+		saveParam();
+		if (G_sys_param.sound_level == 0) {
+			MAINLOG_L1("[VOL] Mute activated");
+			// suppressed tip when hitting 0 to respect mute state
+		} else {
+			PlayTipIfAudible("Volume down");
+		}
+	}
+	showVolumeBar();
 }
 
 void SelectMainMenu(void)
@@ -635,44 +1195,67 @@ void SelectMainMenu(void)
 				++included_menu_size;
 		}
 
-		// filter included menu dengan menu dari enabled_menu
-		int inserted_menu_size = 0;
+		// Build display list and selectable mapping separately so we can insert
+		// info-only items (no numbers, no action) like Volume Up/Down.
+		int display_count = 0;     // total lines shown on screen (including info-only)
+		int selectable_count = 0;  // items that can be selected by number keys
+
+		// filter included menu with enabled_menu (selectable)
 		for (int i = 0; i < included_menu_size; ++i) {
 			char *item = included_menus[i];
-	
+
 			for (int j = 0; j < TOTAL_MENU; ++j) {
 				if (strcmp(pszItems[j], item) == 0) {
-					sprintf(menus[i], "%d. %s", i + 1, pszItems[j]);
-					MAINLOG_L1("Masukkin Menu %d = %s", i, menus[i]);
+					// Number only selectable items
+					sprintf(menus[display_count], "%d. %s", selectable_count + 1, pszItems[j]);
+					MAINLOG_L1("Masukkin Menu (selectable) %d = %s", display_count, menus[display_count]);
 
 					utarray_push_back(menu_functions_used, &menu_functions_list[j]);
-					MAINLOG_L1("Masukkin Function %d = %s", i, pszItems[j]);
+					MAINLOG_L1("Masukkin Function idx=%d = %s", selectable_count, pszItems[j]);
 
-					++inserted_menu_size;
+					++display_count;
+					++selectable_count;
 					break;
 				}
 			}
 		}
 
-		MAINLOG_L1("inserted_menu_size = %d", inserted_menu_size);
+		MAINLOG_L1("selectable_count (after included) = %d", selectable_count);
 
-		// masukkin semua menu dari excluded menus
+		// insert all excluded menus (still selectable), and after 'Update App' add
+		// info-only Volume items without numbers
 		for (int i = 0; i < excluded_menu_size; ++i) {
 			char *item = excluded_menus[i];
-	
+
 			for (int j = 0; j < TOTAL_MENU; ++j) {
 				if (strcmp(pszItems[j], item) == 0) {
-					sprintf(menus[i + inserted_menu_size], "%d. %s", i + inserted_menu_size + 1, pszItems[j]);
-					MAINLOG_L1("Masukkin Menu %d = %s", i + inserted_menu_size, menus[i + inserted_menu_size]);
+					sprintf(menus[display_count], "%d. %s", selectable_count + 1, pszItems[j]);
+					MAINLOG_L1("Masukkin Menu (selectable) %d = %s", display_count, menus[display_count]);
 
 					utarray_push_back(menu_functions_used, &menu_functions_list[j]);
-					MAINLOG_L1("Masukkin Function %d = %s", i + inserted_menu_size, pszItems[j]);
+					MAINLOG_L1("Masukkin Function idx=%d = %s", selectable_count, pszItems[j]);
+
+					++display_count;
+					++selectable_count;
+
+					// After 'Update App' show info-only volume lines (no numbers, no action)
+					// Use plain ASCII text to avoid encoding/render issues on device UI.
+					if (strcmp(pszItems[j], "Update App") == 0) {
+						strcpy(menus[display_count], MENU_UP_TEXT);
+						MAINLOG_L1("Masukkin Info-Only %d = %s", display_count, menus[display_count]);
+						++display_count;
+						strcpy(menus[display_count], MENU_DOWN_TEXT);
+						MAINLOG_L1("Masukkin Info-Only %d = %s", display_count, menus[display_count]);
+						++display_count;
+					}
+
 					break;
 				}
 			}
 		}
 
-		nSelcItem = ShowMenuItem(pszTitle, menus, inserted_menu_size + excluded_menu_size, DIGITAL1, DIGITAL1 + inserted_menu_size + excluded_menu_size - 1, 0, 60);
+		// Show the full display list, but only allow selecting 1..selectable_count
+		nSelcItem = ShowMenuItem(pszTitle, menus, display_count, DIGITAL1, DIGITAL1 + selectable_count - 1, 0, 60);
 		MAINLOG_L1("Selected menu number = %d", nSelcItem);
 
 		//		char sound_string[1000];
@@ -706,11 +1289,12 @@ void SelectMainMenu(void)
 			( *((func_ptr*) utarray_eltptr(menu_functions_used, 6)) )();
 			break;
 		case DIGITAL8:
-			( *((func_ptr*) utarray_eltptr(menu_functions_used, 7)) )();
+			if (utarray_len(menu_functions_used) >= 8) { ( *((func_ptr*) utarray_eltptr(menu_functions_used, 7)) )(); }
 			break;
 		case DIGITAL9:
-			( *((func_ptr*) utarray_eltptr(menu_functions_used, 8)) )();
+			if (utarray_len(menu_functions_used) >= 9) { ( *((func_ptr*) utarray_eltptr(menu_functions_used, 8)) )(); }
 			break;
+		// NOTE: If menu grows beyond 9 items, extend switch for DIGITAL10+, etc.
 		case ESC:
 			return;
 		default:
@@ -859,7 +1443,7 @@ void testMqtt()
 	MAINLOG_L1("testMqtt");
 	ScrClsRam_Api();
 	ScrDisp_Api(LINE1, 0, "Mqtt", CDISP);
-	mQTTMainThread("payment");
+	mQTTMainThread("payment", 0);
 	ScrBrush_Api();
 }
 
@@ -874,7 +1458,7 @@ void QRpos()
 	if (strcmp((char *)param, "POS") == 0)
 	{
 		dev_disconnect();
-		mQTTMainThread("payment-pos");
+		mQTTMainThread("payment-pos", 0);
 	}
 
 	ScrBrush_Api();
@@ -973,9 +1557,9 @@ void SyncData(void)
 	saveSSID("/ext/aisino_title.txt", "");
 	g_aisino_title[0] = '\0';
 
-	saveSSID("/ext/merchant_id_nobu.txt", "12345");
+	saveSSID("/ext/merchant_id_nobu.txt", "");
 	g_merchant_id_nobu[0] = '\0';
-	saveSSID("/ext/external_store_id.txt", "54321");
+	saveSSID("/ext/external_store_id.txt", "");
 	g_external_store_id[0] = '\0';	
 
 	// sync_data
@@ -1393,47 +1977,54 @@ void readFilewifi()
 
 void SelectSettingsMenu(void)
 {
-	int nSelcItem = 1, ret;
-
-	char *pszTitle = "Menu";
+    int nSelcItem = 1;
+    const char *pszTitle = "Menu";
 	const char *pszItems[] = {
-			"1.Volum up",
-			"2.Volum down",
+		"↑ Volume Up",   // Unicode up arrow; fallback: replace with '^' if device font unsupported
+		"↓ Volume Down", // Unicode down arrow; fallback: replace with 'v' if device font unsupported
 	};
-	while (1)
-	{
-		nSelcItem = ShowMenuItem(pszTitle, pszItems, pszItemsCount, DIGITAL1, DIGITAL2, 0, 60);
-		MAINLOG_L1("ShowMenuItem = %d  %d  %d", nSelcItem, DIGITAL1, DIGITAL2);
-		switch (nSelcItem)
-		{
-		case DIGITAL1:
-			if (G_sys_param.sound_level >= 5)
-				AppPlayTip("This is the maximum volume");
-			else
-			{
-				G_sys_param.sound_level++;
-				AppPlayTip("Volume up");
-				saveParam();
-			}
-			break;
-		case DIGITAL2:
-			if (G_sys_param.sound_level <= 1)
-				AppPlayTip("This is the minimum volume");
-			else
-			{
-				G_sys_param.sound_level--;
-				AppPlayTip("Volume down");
-				saveParam();
-			}
-			break;
-		case ESC:
-			return;
-		default:
-			break;
-		}
-	}
+    while (1)
+    {
+        nSelcItem = ShowMenuItem((char *)pszTitle, pszItems, 2, DIGITAL1, DIGITAL2, 0, 60);
+        MAINLOG_L1("ShowMenuItem = %d", nSelcItem);
+        switch (nSelcItem)	
+        {
+        case DIGITAL1:
+            if (G_sys_param.sound_level >= 5) {
+                PlayTipIfAudible("Max volume");
+            } else {
+                int before = G_sys_param.sound_level;
+                G_sys_param.sound_level++;
+                saveParam();
+                if (before == 0)
+                    PlayTipIfAudible("Unmute");
+                else
+                    PlayTipIfAudible("Volume up");
+            }
+            showVolumeBar();
+            break;
+        case DIGITAL2:
+            if (G_sys_param.sound_level <= 0) {
+                MAINLOG_L1("[VOL] Already muted");
+            } else {
+                G_sys_param.sound_level--;
+                saveParam();
+                if (G_sys_param.sound_level == 0) {
+                    MAINLOG_L1("[VOL] Mute activated");
+                    // suppress tip
+                } else {
+                    PlayTipIfAudible("Volume down");
+                }
+            }
+            showVolumeBar();
+            break;
+        case ESC:
+            return;
+        default:
+            break;
+        }
+    }
 }
-
 void OutputAPDU(char *FileName)
 {
 	char TempBuf[1025];
@@ -1646,7 +2237,7 @@ int inputNumber(unsigned char *buffer, int fontSize, int dispOnMainScreen, int m
 
 		if ((ret != 0) && (ret != 8) && (ret != 13) && (ret != 27) && (loc >= maxLen))
 		{
-			Beep_Api(1);
+			BeepIfAudible(1);
 			continue;
 		}
 
@@ -1694,7 +2285,7 @@ int inputNumber(unsigned char *buffer, int fontSize, int dispOnMainScreen, int m
 			}
 			else
 			{
-				Beep_Api(1);
+				BeepIfAudible(1);
 			}
 			break;
 		case 13: // confirm
@@ -1787,6 +2378,7 @@ int prosesQr(char *buf, unsigned char *reference)
 		if (ret == 0)
 		{
 			dev_disconnect();
+			MAINLOG_L1("QR Code berhasil dibuat: %s", t_rBufQR);
 			QRDispTestNobu(t_rBufQR, buf, "payment-pos");
 		}
 		else
@@ -2123,166 +2715,180 @@ void dukpt_19()
 
 int httpPost(u8 *packData, int *packLen, char *extracted, char *amount)
 {
-	MAINLOG_L1("TMS: Tms_CreatePacket()");
+    MAINLOG_L1("TMS: Tms_CreatePacket()");
 
-	cJSON *root = NULL;
-	char *out = NULL;
+    cJSON *root = NULL;
+    char *out = NULL;
+    int dataLen, i;
+    u8 buf[64], tmp[64], timestamp[16], urlPath[128], md5src[1024];
 
-	int dataLen, i;
-	u8 buf[64], tmp[64], timestamp[16], urlPath[128], md5src[1024];
+    memset(urlPath, 0, sizeof(urlPath));
+    root = cJSON_CreateObject();
 
-	memset(urlPath, 0, sizeof(urlPath));
-	root = cJSON_CreateObject();
+    char TempBuf2[1025];
+    int ret4 = 0, loc2 = 0, fileLen3 = 0;
 
-	char TempBuf2[1025];
-	int Len2 = 0, ret4 = 0, loc2 = 0;
-	int fileLen3 = 0;
-	int diff2 = 0;
+    // ===== Buka port & baca alias =====
+    memset(TempBuf2, 0, sizeof(TempBuf2));
+    portClose_lib(10);
+    portOpen_lib(10, NULL);
+    portFlushBuf_lib(10);
 
-	memset(TempBuf2, 0, sizeof(TempBuf2));
-	portClose_lib(10);
-	portOpen_lib(10, NULL);
-	portFlushBuf_lib(10);
-	fileLen3 = GetFileSize_Api("/ext/alias.txt");
-	MAINLOG_L1("readfile = %d", fileLen3);
-	memset(TempBuf2, 0, sizeof(TempBuf2));
-	ret4 = ReadFile_Api("/ext/alias.txt", TempBuf2, loc2, &fileLen3);
-	MAINLOG_L1("readfile = %d", ret4);
-	MAINLOG_L1("readfile = %s", TempBuf2);
-	if (ret4 == 3)
-	{
-		dev_disconnect();
-		ScrCls_Api();
-		ScrDisp_Api(LINE1, 0, "Tidak Ada Serial Number Harap ", CDISP);
-		ScrDisp_Api(LINE2, 0, "Sync Terlebih Dahulu", CDISP);
-		WaitEnterAndEscKey_Api(12);
-		return;
-	}
-	int number = atoi(TempBuf2);
-	int fileLength = 0;
-	char *serialNumber = (char*)calloc(2048, sizeof(char));
-	fileLength = GetFileSize_Api("/ext/serial.txt");
-	int readFileReturn = ReadFile_Api("/ext/serial.txt", serialNumber, 0, &fileLength);
-	MAINLOG_L1("serial number = %s", serialNumber);
-	MAINLOG_L1("read serial number = %d", readFileReturn);
-	cJSON_AddStringToObject(root, "serialNumber", serialNumber);
-	cJSON_AddNumberToObject(root, "id", number);
-	cJSON_AddStringToObject(root, "payment_type", "qris_dynamic");
-	if (strcmp((char *)amount, "0") != 0)
-	{
-		cJSON_AddNumberToObject(root, "amount", atoi(amount));
-	}
+    fileLen3 = GetFileSize_Api("/ext/alias.txt");
+    MAINLOG_L1("readfile = %d", fileLen3);
+    memset(TempBuf2, 0, sizeof(TempBuf2));
+    ret4 = ReadFile_Api("/ext/alias.txt", TempBuf2, loc2, &fileLen3);
+    MAINLOG_L1("readfile = %d", ret4);
+    MAINLOG_L1("readfile = %s", TempBuf2);
 
-	if (strcmp((char *)amount, "0") != 0)
-	{
-		sprintf((char *)urlPath, "POST /transactions-services/transactions/aisinoQRV2");
-	}
-	else
-	{
-		sprintf((char *)urlPath, "POST /transactions-services/transactions/aisinoQRV2");
-	}
+    if (ret4 == 3)
+    {
+        dev_disconnect();
+        ScrCls_Api();
+        ScrDisp_Api(LINE1, 0, "Tidak Ada Serial Number Harap ", CDISP);
+        ScrDisp_Api(LINE2, 0, "Sync Terlebih Dahulu", CDISP);
+        WaitEnterAndEscKey_Api(12);
+        return -1;
+    }
 
-	out = cJSON_PrintUnformatted(root);
-	dataLen = strlen(out);
+    int number = atoi(TempBuf2);
 
-	memcpy((char *)packData + strlen((char *)packData), urlPath, strlen((char *)urlPath));
-	strcat((char *)packData, " HTTP/1.1\r\n");
+    // ===== Baca serial number =====
+    int fileLength = GetFileSize_Api("/ext/serial.txt");
+    char *serialNumber = (char*)calloc(2048, sizeof(char));
+    int readFileReturn = ReadFile_Api("/ext/serial.txt", serialNumber, 0, &fileLength);
+    MAINLOG_L1("serial number = %s", serialNumber);
+    MAINLOG_L1("read serial number = %d", readFileReturn);
 
-	/// ========== TimeStamp & Sign
-	memset(timestamp, 0, sizeof(timestamp));
-	GetSysTime_Api(tmp);
-	BcdToAsc_Api((char *)timestamp, (unsigned char *)tmp, 14);
+    // ===== Buat JSON request =====
+    cJSON_AddStringToObject(root, "serialNumber", serialNumber);
+    cJSON_AddNumberToObject(root, "id", number);
+    cJSON_AddStringToObject(root, "payment_type", "qris_dynamic");
 
-	memset(tmp, 0x20, sizeof(tmp));
-	memset(buf, 0x20, sizeof(buf));
+    if (strcmp(amount, "0") != 0)
+        cJSON_AddNumberToObject(root, "amount", atoi(amount));
 
-	memcpy(tmp, TmsStruct.sn, strlen(TmsStruct.sn));
-	memcpy(buf, timestamp, strlen((char *)timestamp));
+    sprintf((char *)urlPath, "POST /transactions-services/transactions/aisinoQRV2");
 
-	for (i = 0; i < 50; i++)
-	{
-		tmp[i] ^= buf[i];
-	}
+    out = cJSON_PrintUnformatted(root);
+    dataLen = strlen(out);
 
-	memset(buf, 0x20, sizeof(buf));
-	memcpy(buf, "998876511QQQWWeerASDHGJKL", strlen("998876511QQQWWeerASDHGJKL"));
+    memcpy(packData + strlen((char *)packData), urlPath, strlen((char *)urlPath));
+    strcat((char *)packData, " HTTP/1.1\r\n");
 
-	for (i = 0; i < 50; i++)
-	{
-		tmp[i] ^= buf[i];
-	}
+    // ===== TimeStamp & Sign =====
+    memset(timestamp, 0, sizeof(timestamp));
+    GetSysTime_Api(tmp);
+    BcdToAsc_Api((char *)timestamp, (unsigned char *)tmp, 14);
 
-	tmp[50] = 0;
-	memset(buf, 0, sizeof(buf));
-	memset(md5src, 0, sizeof(md5src));
+    memset(tmp, 0x20, sizeof(tmp));
+    memset(buf, 0x20, sizeof(buf));
 
-	memcpy(md5src, out, dataLen);
-	BcdToAsc_Api((char *)(md5src + dataLen), (unsigned char *)tmp, 100);
+    memcpy(tmp, TmsStruct.sn, strlen(TmsStruct.sn));
+    memcpy(buf, timestamp, strlen((char *)timestamp));
 
-	// MD5
-	_tms_MDString((char *)md5src, (unsigned char *)buf);
+    for (i = 0; i < 50; i++)
+        tmp[i] ^= buf[i];
 
-	memset(tmp, 0, sizeof(tmp));
-	BcdToAsc_Api((char *)tmp, (unsigned char *)buf, 32);
+    memset(buf, 0x20, sizeof(buf));
+    memcpy(buf, "998876511QQQWWeerASDHGJKL", strlen("998876511QQQWWeerASDHGJKL"));
 
-	sprintf((char *)packData + strlen((char *)packData), "Content-Length: %d\r\n", strlen((char *)out));
+    for (i = 0; i < 50; i++)
+        tmp[i] ^= buf[i];
 
-	strcat((char *)packData, "Content-Type: application/json\r\n");
+    tmp[50] = 0;
+    memset(buf, 0, sizeof(buf));
+    memset(md5src, 0, sizeof(md5src));
 
-	sprintf((char *)packData + strlen((char *)packData), "Host: %s\r\n", DOMAIN);
+    memcpy(md5src, out, dataLen);
+    BcdToAsc_Api((char *)(md5src + dataLen), (unsigned char *)tmp, 100);
 
-	strcat((char *)packData, "Connection: Keep-Alive\r\n");
+    _tms_MDString((char *)md5src, (unsigned char *)buf);
+    memset(tmp, 0, sizeof(tmp));
+    BcdToAsc_Api((char *)tmp, (unsigned char *)buf, 32);
 
-	strcat((char *)packData, "User-Agent: Apache-HttpClient/4.3.5 (java 1.5)\r\n");
+    sprintf(packData + strlen((char *)packData), "Content-Length: %d\r\n", strlen(out));
+    strcat(packData, "Content-Type: application/json\r\n");
+    sprintf(packData + strlen((char *)packData), "Host: %s\r\n", DOMAIN);
+    strcat(packData, "Connection: Keep-Alive\r\n");
+    strcat(packData, "User-Agent: Apache-HttpClient/4.3.5 (java 1.5)\r\n");
+    strcat(packData, "Accept-Encoding: gzip,deflate\r\n\r\n");
 
-	strcat((char *)packData, "Accept-Encoding: gzip,deflate\r\n\r\n");
+    memcpy(packData + strlen((char *)packData), out, dataLen);
 
-	memcpy(packData + strlen((char *)packData), out, dataLen);
+    *packLen = strlen((char *)packData);
+    free(out);
+    cJSON_Delete(root);
+    free(serialNumber);
 
-	*packLen = strlen((char *)packData);
-	free(out);
-	cJSON_Delete(root);
+   int ret = dev_send(packData, *packLen);
+    int ret2 = dev_recv(packData, RECEIVE_BUF_SIZE, 10);
+    
+    // Pastikan data yang diterima null-terminated
+    if (ret2 > 0 && ret2 < RECEIVE_BUF_SIZE) {
+        packData[ret2] = '\0';
+    }
+    
+    MAINLOG_L1("nembak api httpPost() - ret1 = %d, ret2 = %d", ret, ret2);
+    MAINLOG_L1("Full HTTP Response:\n%s", packData);
 
-	int ret = 0;
-	ret = dev_send(packData, *packLen);
-	int ret2 = 0;
-	MAINLOG_L1("nembak api httpPost()- ret1 cuy= %d", ret);
-	ret2 = dev_recv(packData, RECEIVE_BUF_SIZE, 10);
-	MAINLOG_L1("nembak api httpPost()- ret2 after send = %d", ret2);
-	if (strstr(packData, "| | |") != NULL && strstr(packData, " + + +") != NULL)
-	{
-		char *start = strstr(packData, "| | | ");
-		start += strlen("| | | ");
-		char *end = strstr(start, " + + +");
-		if (end == NULL)
-		{
-			dev_disconnect();
+    // ===== Ambil QRIS & partnerReferenceNo =====
+    char *qris_start = strstr(packData, "| | |");
+    char *qris_end = strstr(packData, " + + +");
+    
+    if (qris_start != NULL && qris_end != NULL)
+    {
+        // Extract QRIS code
+        qris_start += strlen("| | | "); // Move pointer to start of QRIS data
+        int qris_length = qris_end - qris_start;
+        strncpy(extracted, qris_start, qris_length);
+        extracted[qris_length] = '\0';
+        MAINLOG_L1("Extracted QRIS: %s", extracted);
+
+        // Extract partnerReferenceNo (after the semicolon)
+        char *partner_ref_start = strstr(qris_end, "; ");
+		MAINLOG_L1("partner_ref_start: %s", partner_ref_start);
+        if (partner_ref_start != NULL)
+        {
+            partner_ref_start += strlen("; "); // Move pointer to start of partnerReferenceNo
+			MAINLOG_L1("partner_ref_start: %s", partner_ref_start);
+         	 char *partner_ref_end = strpbrk(partner_ref_start, " \r\n;\""); 
+			MAINLOG_L1("partner_ref_end: %s", partner_ref_end);
+			int partner_ref_length = partner_ref_end ? (partner_ref_end - partner_ref_start) : strlen(partner_ref_start);
+			MAINLOG_L1("partner_ref_length: %d", partner_ref_length);
+			// Validasi panjang UUID agar tidak kependekan
+			if (partner_ref_length < 10 || partner_ref_length > 128) {
+				MAINLOG_L1("partnerReferenceNo tidak valid");
+				return -1;
+			}
+            
+            char partnerRef[128];
+			
+			if (partner_ref_length >= sizeof(partnerRef)) {
+			MAINLOG_L1("partnerReferenceNo terlalu panjang");
 			return -1;
-		}
+			}
 
-		int length = end - start;
-		*extracted = (char *)malloc(length);
-		if (extracted == NULL)
-		{
-			dev_disconnect();
-			return -1;
-		}
-		strncpy(extracted, start, length);
-		extracted[length] = '\0';
-		MAINLOG_L1("nembak api httpPost()- extracted= %s", extracted);
-		if (strcmp((char *)extracted, "ERROR") == 0)
-		{
-			return -1;
-		}
-		else
-		{
-			return 0;
-		}
-	}
-	else
-	{
-		return -1;
-	}
+            strncpy(partnerRef, partner_ref_start, partner_ref_length);
+            partnerRef[partner_ref_length] = '\0';
+            
+            // Save partnerReferenceNo to file
+			int retSave = saveSSID("/ext/partner_ref.txt", partnerRef);
+			MAINLOG_L1("partnerReferenceNo saved to SSID: %s, ret=%d", partnerRef, retSave);
+
+            return 0; // Success
+        }
+        else
+        {
+            MAINLOG_L1("Partner reference not found in response");
+            return -1;
+        }
+    }
+    else
+    {
+        MAINLOG_L1("Response format tidak dikenali");
+        return -1;
+    }
 }
 
 void SetTmsUpdateProgress(int row, const char *data)
@@ -2348,22 +2954,45 @@ int QRInvoice(char *final_url)
 
 int QRDispTestNobu(unsigned char *qrStr, char *amount, char *param)
 {
+	MAINLOG_L1("qrStr = %s", qrStr);
+	MAINLOG_L1("amount = %s", amount);
+	MAINLOG_L1("param = %s", param);
 	int ret;
 	char amountnya[200] = "";
 	char partnerRefBuff[256] = {0};
+	char partnerRefPos[256]	= {0};
 	char formattedNumber[20];
 	formatRupiah(amount, formattedNumber);
-	ret = QREncodeString(qrStr, 3, 3, QRBMP, 2.9);
+	ret = QREncodeString(qrStr, 3, 3, QRBMP, 3.4);
+	MAINLOG_L1("qr berhasil didapatkan")
+
+	// logMessage('generate qr')
 	MAINLOG_L1("qr terakhir = %s", qrStr);
 	char TempBuf2[1025];
 	int Len2 = 0, ret4 = 0, loc2 = 0;
 	int fileLen2 = 0;
 	int diff2 = 0;
 
-	int fileLenPartnerRef = GetFileSize_Api("/ext/partner_ref_pos.txt");
+	int fileLenPartnerRef = GetFileSize_Api("/ext/partner_ref.txt");
+
 	if (fileLenPartnerRef > 0 && fileLenPartnerRef < sizeof(partnerRefBuff)) {
-		ReadFile_Api("/ext/partner_ref_pos.txt", partnerRefBuff, 0, &fileLenPartnerRef);
+		ReadFile_Api("/ext/partner_ref.txt", partnerRefBuff, 0, &fileLenPartnerRef);
+		partnerRefBuff[fileLenPartnerRef] = '\0';
+		MAINLOG_L1("PartnerRef len = %d, isi = [%s]", strlen(partnerRefBuff), partnerRefBuff);
+
 		MAINLOG_L1("PartnerRef dari file = %s", partnerRefBuff);
+	} else {
+		MAINLOG_L1("File partner_ref.txt kosong atau terlalu besar");
+	}
+
+	int fileLenPartnerRefPos = GetFileSize_Api("/ext/partner_ref_pos.txt");
+
+	if (fileLenPartnerRefPos > 0 && fileLenPartnerRefPos < sizeof(partnerRefPos)) {
+		ReadFile_Api("/ext/partner_ref_pos.txt", partnerRefPos, 0, &fileLenPartnerRefPos);
+		partnerRefPos[fileLenPartnerRefPos] = '\0';
+		MAINLOG_L1("PartnerRefPos len = %d, isi = [%s]", strlen(partnerRefPos), partnerRefPos);
+
+		MAINLOG_L1("PartnerRefPos dari file = %s", partnerRefPos);
 	} else {
 		MAINLOG_L1("File partner_ref_pos.txt kosong atau terlalu besar");
 	}
@@ -2379,11 +3008,18 @@ int QRDispTestNobu(unsigned char *qrStr, char *amount, char *param)
 	ScrCls_Api();
 	ScrDisp_Api(LINE2, 0, TempBuf2, CDISP);
 	sprintf(amountnya, "Rp. %s", formattedNumber);
-	ScrDispImage_Api(QRBMP, 45, 65);
-	ScrDisp_Api(LINE10, 0, amountnya, CDISP);
-	ScrDisp_Api(11, 0, "[1] = Cek Pembayaran", CDISP);
+	ScrDispImage_Api(QRBMP, 55, 60);
+	ScrDisp_Api(12, 0, amountnya, CDISP);
+	// ScrDisp_Api(11, 0, "[1] = Cek Pembayaran", CDISP);
+	
+	MAINLOG_L1("param = %s", param);
 
-	// while (1) {
+	// if (strcmp(param, "qr") == 0) {
+	// 	MAINLOG_L1("delay blocking");
+	// 	Delay_Api(5000);   // delay 5 detik
+	// }
+
+	// // while (1) {
 	// int key = GetKey_Api();
 	// if (key == '1') {
 	// 	char serialNumber[128] = {0};
@@ -2391,36 +3027,51 @@ int QRDispTestNobu(unsigned char *qrStr, char *amount, char *param)
 	// 	ReadFile_Api("/ext/serial.txt", serialNumber, 0, &fileLenSerial);
 	// 	MAINLOG_L1("Serial numbernya = %s", serialNumber);
 
-	// 	const char *partnerReferenceNo = "SII-xxxx-openAPIV3"; 
-	// 	const char *callback = "1"; 
+	// 	MAINLOG_L1("PartnerRef dari file = %s", partnerRefBuff);
 
 	// 	char responseOut[RECVPACKLEN] = {0};
-	// 	int cbRet = hitCallbackApi(partnerReferenceNo, callback, serialNumber, responseOut);
+	// 	int cbRet = hitCallbackApi(partnerRefBuff, serialNumber, responseOut);
 
-	// 	ScrDisp_Api(0, 0, cbRet == 0 ? "Callback sukses" : "Callback gagal", CDISP);
-	// 	ScrDisp_Api(1, 0, responseOut, CDISP);
-
-	// 	int timer = 30;
-	// 	while (timer > 0) {
-	// 		char timerStr[32];
-	// 		sprintf(timerStr, "Tunggu %d detik...", timer);
-	// 		ScrDisp_Api(2, 0, timerStr, CDISP);
-	// 		ScrBrush_Api();
-	// 		Delay_Api(1000);
-	// 		timer--;
+	// 	if (cbRet == 0) {
+	// 		// Callback sukses
+	// 		ScrDisp_Api(0, 0, "Callback sukses", CDISP);
+	// 		// ScrDisp_Api(1, 0, responseOut, CDISP);
+	// 	} else {
+	// 		// Callback gagal
+	// 		ScrDisp_Api(0, 0, "Trx Not Found", CDISP);
+	// 		// ScrDisp_Api(1, 0, responseOut, CDISP);
 	// 	}
+
+	// 	// Tunggu user tekan ESC atau ENTER untuk keluar
+	// 	// while (1) {
+	// 		int k = GetKey_Api();
+	// 		if (k == ESC || k == ENTER) {
+	// 			break;
+	// 		}
+	// 		Delay_Api(100);
+	// 	// }
+
+	// // int timer = 30;
+	// // while (timer > 0) {
+	// // 	char timerStr[32];
+	// // 	sprintf(timerStr, "Tunggu %d detik...", timer);
+	// // 	ScrDisp_Api(2, 0, timerStr, CDISP);
+	// // 	ScrBrush_Api();
+	// // 	Delay_Api(1000);
+	// // 	timer--;
+    // // }
+    // ScrClrLine_Api(0, 0);
+    // ScrClrLine_Api(1, 1);
+    // ScrClrLine_Api(2, 2);
+    // ScrBrush_Api();
+    // break;
+
 	// 	ScrClrLine_Api(0, 0);
 	// 	ScrClrLine_Api(1, 1);
-	// 	ScrClrLine_Api(2, 2);
 	// 	ScrBrush_Api();
 	// 	break;
 	// }
-	// if (key == ESC || key == ENTER) {
-	// 	break;
-	// }
-
-	// 	Delay_Api(100); 
-	// }
+	// // }
 
 	// return 0;
 
@@ -2431,13 +3082,13 @@ int QRDispTestNobu(unsigned char *qrStr, char *amount, char *param)
 	if (strcmp((char *)param, "payment-pos") == 0)
 	{
 		MAINLOG_L1("masuk if payment");
-		mQTTMainThread(param);
+		mQTTMainThread(param, 0);
 		MAINLOG_L1("selesai if payment");
 	}
 	else if (strcmp((char *)param, "static") == 0)
 	{
 		MAINLOG_L1("masuk if static");
-		mQTTMainThread(param);
+		mQTTMainThread(param, 0);
 		MAINLOG_L1("selesai if static");
 	}
 	MAINLOG_L1("selesai QRDispTestNobu");

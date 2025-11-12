@@ -67,7 +67,7 @@ int checkAppUpdate(){
 	CheckAppFile();
 
 	fileFilter = 3;
-	folderFileDisplay("/ext/myfile/appfile");
+	folderFileDisplay("/ext/q161pro/appfile");
 
 	MAINLOG_L1("needUpdate == %d",needUpdate);
 	if(needUpdate==1){
@@ -103,53 +103,72 @@ int get_tms_download_flag(){
 	return tms_download_flag;
 }
 
-int fileGetFileListCB_lib(char *pchDirName, void (*cb)(const char *pchDirName, uint32 size, uint8 filetype, void *arg), void *args);
+void safeRemoveDir(const char *path) {
+    int ret;
 
-void fileGetListCbTest(const char *pchDirName, uint32 size, uint8 filetype, void *arg)
-{
-	sysLOG(0, "size = %d,filetype=%d,pchDirName:%s, arg=%s\r\n", size, filetype, pchDirName, arg);
+    ret = fileGetFileListCB_lib((char *)path, NULL, NULL);
+
+    if (ret < 0) {
+        MAINLOG_L1("[safeRemoveDir] Skip, directory not exist or empty: %s", path);
+        return;
+    }
+
+    MAINLOG_L1("[safeRemoveDir] Cleaning directory: %s", path);
+    removeDirWithContent(path);
 }
 
 
 void TMSThread(void)
 {
-	int ret;
-	long long tick1, tick2;
+    int ret;
+    long long tick1, tick2;
 
-	while (1) {
-		while (tms_download_flag == 0) {
-			MAINLOG_L1("no tms task yet");
-			Delay_Api(1000);
-		}
+    while (1) {
+        while (tms_download_flag == 0) {
+            MAINLOG_L1("[TMSThread] No TMS task yet...");
+            Delay_Api(1000);
+        }
+        MAINLOG_L1("[TMSThread] Start TMS download task...");
 
-		DelFile_Api(TMS_DOWN_FILE);
-		// fileGetFileListCB_lib("/ext/images");
-		// fileGetFileListCB_lib("/ext/hindi");
-		// fileGetFileListCB_lib("/ext/myfile");
+        DelFile_Api(TMS_DOWN_FILE);
+        MAINLOG_L1("[TMSThread] DelFile_Api(%s) ret=%d", TMS_DOWN_FILE, ret);
 
-		tick1 = sysGetTicks_lib(); //ms
-//		ret = httpDownload("https://support-f.vanstone.com.cn/resource/r_f318b0f7833e440cb81342a66a0cca32/English.zip", METHOD_GET, TMS_DOWN_FILE);
-//		ret = httpDownload("https://demo1.ezetap.com/portal/device/firmware/download/ff3a2d4e-f2f0-4af2-83ac-6f396df90e0d", METHOD_GET, TMS_DOWN_FILE);
-		// ret = httpDownload("http://cool.uruz.id/myfile.zip", METHOD_GET, TMS_DOWN_FILE);
-		ret = httpDownload("http://cool.uruz.id/Q161Pro.zip", METHOD_GET, TMS_DOWN_FILE);
+        MAINLOG_L1("[TMSThread] Cleaning old directories...");
+        // removeDirWithContent("/ext/images");
+        // removeDirWithContent("/ext/hindi");
+        // removeDirWithContent("/ext/q161pro");
 
+        // Mulai download file baru
+        tick1 = sysGetTicks_lib();
+        MAINLOG_L1("[TMSThread] Downloading new package...");
 
-		MAINLOG_L1("Q161Demo: httpDownload ret:%d  downFile.zip size = %d  tick time:%lld", ret, GetFileSize_Api(TMS_DOWN_FILE), sysGetTicks_lib()-tick1);
+        ret = httpDownload("http://cool.uruz.id/q161pro.zip", METHOD_GET, TMS_DOWN_FILE);
 
-		if (ret > 0) {
-			// Prepare for update after reboot, may need to prompt user
-			ret = unzipDownFile(TMS_DOWN_FILE);
+        tick2 = sysGetTicks_lib();
+        MAINLOG_L1("[TMSThread] httpDownload ret=%d, file=%s, size=%d, elapsed=%lld ms",
+                   ret, TMS_DOWN_FILE, GetFileSize_Api(TMS_DOWN_FILE), tick2 - tick1);
+			
+        if (ret > 0) {
+            MAINLOG_L1("[TMSThread] Download success, start unzip...");
 
-			//or check update app when terminal power on
-			ret = checkAppUpdate();
-			if (ret==2) {
-				MAINLOG_L1("without new app to update");
-			}
-		}else{
-			AppPlayTip("Download fail");
-			DelFile_Api(TMS_DOWN_FILE);
-		}
+            // Extract file
+            ret = unzipDownFile(TMS_DOWN_FILE);
+            MAINLOG_L1("[TMSThread] unzipDownFile ret=%d", ret);
 
-		tms_download_flag = 0;
-	}
+            // Check update app
+            ret = checkAppUpdate();
+            MAINLOG_L1("[TMSThread] checkAppUpdate ret=%d", ret);
+
+            if (ret == 2) {
+                MAINLOG_L1("[TMSThread] No new app to update");
+            }
+        } else {
+            MAINLOG_L1("[TMSThread] Download failed!");
+            AppPlayTip("Download fail");
+            DelFile_Api(TMS_DOWN_FILE);
+        }
+
+        MAINLOG_L1("[TMSThread] TMS task finished");
+        tms_download_flag = 0;
+    }
 }

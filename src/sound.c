@@ -12,7 +12,13 @@
 
 void AppPlayTip(char *tip)
 {
-	 PlaySound_Api((unsigned char *)tip, G_sys_param.sound_level*2-1, 0); // pakai ini kalo ubah volume suara di asino udh diimplementasiin
+	// Suppress audible tips when sound level is 0 (muted).
+	if (G_sys_param.sound_level == 0) {
+		MAINLOG_L1("[VOL] Muted, suppress AppPlayTip: %s", tip ? tip : "(null)");
+		return;
+	}
+
+	PlaySound_Api((unsigned char *)tip, G_sys_param.sound_level*2-1, 0); // pakai ini kalo ubah volume suara di asino udh diimplementasiin
 //	PlaySound_Api((unsigned char *)tip, 1, 0);
 }
 
@@ -27,6 +33,13 @@ int PlayMP3File(char *audioFileName){
 		sprintf(filePath,"/ext/arabic/%s",audioFileName);
 	strcat( filePath, ".mp3");
 	MAINLOG_L1("MP3 Path is %s",filePath);
+
+	// If muted, skip actually playing the MP3. Return success so callers
+	// don't treat this as an error condition.
+	if (G_sys_param.sound_level == 0) {
+		MAINLOG_L1("[VOL] Muted, skip PlayMP3File: %s", filePath);
+		return 0;
+	}
 
 	while(1){
 		ret = audioFilePlayPath_lib(filePath);

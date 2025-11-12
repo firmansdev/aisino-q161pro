@@ -59,27 +59,88 @@ void folderFileDisplay(unsigned char *filePath)
 
 }
 
+int fileGetFileListCB_lib(
+    char *pchDirName,
+    void (*cb)(const char *pchDirName, uint32 size, uint8 filetype, void *arg),
+    void *args
+);
+
+void fileGetListCbTest(const char *pchDirName, uint32 size, uint8 filetype, void *arg)
+{
+	MAINLOG_L1(0, "size = %d,filetype=%d,pchDirName:%s, arg=%s\r\n", size, filetype, pchDirName, arg);
+}
+
+void removeFileCb(const char *pchDirName, uint32 size, uint8 filetype, void *arg)
+{
+    if (filetype == 0) {
+        
+        int ret = DelFile_Api(pchDirName);
+        MAINLOG_L1(0, "Delete file %s, ret=%d\r\n", pchDirName, ret);
+    } else if (filetype == 1) {
+      
+        fileGetFileListCB_lib((char *)pchDirName, removeFileCb, NULL);
+        int ret = fileRmdir_lib(pchDirName);
+        MAINLOG_L1(0, "Remove folder %s, ret=%d\r\n", pchDirName, ret);
+    }
+}
+int removeDirWithContent(const char *path)
+{
+
+    int ret = fileGetFileListCB_lib((char *)path, removeFileCb, NULL);
+    MAINLOG_L1(0, "removeDirWithContent path=%s, ret=%d\r\n", path, ret);
+
+    ret = fileRmdir_lib(path);
+    MAINLOG_L1(0, "Final remove folder %s, ret=%d\r\n", path, ret);
+
+	return ret;
+}
+
+void logFileCb(const char *pchDirName, uint32 size, uint8 filetype, void *arg)
+{
+    if (filetype == 0) {
+        MAINLOG_L1(0, "[LOG] File: %s (size=%u)\r\n", pchDirName, size);
+    } else if (filetype == 1) {
+        MAINLOG_L1(0, "[LOG] Folder: %s\r\n", pchDirName);
+        fileGetFileListCB_lib((char *)pchDirName, logFileCb, NULL);
+    }
+}
+
+
+
 int unzipDownFile(unsigned char *fileName){
-	int ret;
-	// ret = fileRmdirAndContent_lib("/ext/myfile");
-	// MAINLOG_L1("Q161Demo: fileRmdirAndContent_lib = %d", ret);
+    int ret;
 
-	ScrCls_Api();
-	ScrDisp_Api(LINE4, 0, "Extracting...", CDISP);
+    MAINLOG_L1("[unzipDownFile] Start unzip a process for %s", fileName);
 
-	AppPlayTip("Extracting");
+    MAINLOG_L1("[unzipDownFile] Cleaning directory /ext/q161pro ...");
+	MAINLOG_L1("[unzipDownFile] ZIPPATH = %s", ZIPPATH);
 
-	ret = fileunZip_lib(fileName, ZIPPATH);
-	MAINLOG_L1("Q161Demo: unzip = %d", ret);
-	if(ret != 0){
-		AppPlayTip("Extract file fail");
-		return -1;
-	}
+	// ret = removeDirWithContent("/ext/q161pro");
+	// MAINLOG_L1("[unzipDownFile] removeDirWithContent ret=%d", ret);
 
-	AppPlayTip("Extract file success");
-	DelFile_Api(fileName);//delete zip after unzip it
+    ScrCls_Api();
+    ScrDisp_Api(LINE4, 0, "Extracting...", CDISP);
 
-	return 0;
+    AppPlayTip("Extracting");
+
+	MAINLOG_L1("[unzipDownFile] fileName = %s", fileName);
+	MAINLOG_L1("[unzipDownFile] ZIPPATH = %s", ZIPPATH);
+    ret = fileunZip_lib(fileName, ZIPPATH);
+    MAINLOG_L1("[unzipDownFile] fileunZip_lib ret=%d", ret);
+
+    if(ret != 0){
+        MAINLOG_L1("[unzipDownFile] Unzip FAILED for %s", fileName);
+        AppPlayTip("Extract file fail");
+        return -1;
+    }
+
+    MAINLOG_L1("[unzipDownFile] Unzip SUCCESS for %s", fileName);
+    AppPlayTip("Extract file success");
+
+    MAINLOG_L1("[unzipDownFile] Deleting zip file %s ...", fileName);
+    DelFile_Api(fileName);
+    MAINLOG_L1("[unzipDownFile] Finished unzip process");
+    return 0;
 }
 
 void CheckAppFile(){

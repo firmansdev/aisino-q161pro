@@ -17,7 +17,7 @@
 const APP_MSG App_Msg = {
 		"Demo",
 		"Demo-App",
-		"V.2.0.0",
+		"V.2.2.0",
 		"VANSTONE",
 		__DATE__ " " __TIME__,
 		"",
@@ -233,6 +233,7 @@ void apply_sync_menu_from_file()
 		cJSON_Delete(menuJson);
 	}
 }
+
 
 void connectWifi()
 {

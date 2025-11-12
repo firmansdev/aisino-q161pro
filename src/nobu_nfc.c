@@ -124,6 +124,7 @@ int read_qris_cpm_data_using_picc(char *data, int *data_len) {
             MAINLOG_L1("Error: READ RECORD part 2 failed, response code: %04X\n", respCode);
             return -1;
         }
+        MAINLOG_L1("READ RECORD part 2 succeeded, response: %04X\n", respCode);
         memcpy(combinedData + combinedLength, resp.DataOut, resp.LenOut);
         combinedLength += resp.LenOut;
     } else {

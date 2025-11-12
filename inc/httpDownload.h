@@ -8,8 +8,9 @@
 #define	RECEIVE_TIMEOUT		90
 
 #ifdef __RECVLARGEBUF__
-#define	RECEIVE_BUF_SIZE	3048
-#define	RECEIVE_RANGE		3048
+#define	RECEIVE_BUF_SIZE 3048
+#define RECEIVE_BUF_SIZE 4096   // 4 KB
+#define RECEIVE_RANGE    4096
 #else
 #define	RECEIVE_BUF_SIZE	3048
 #define	RECEIVE_RANGE		3048	// Content range requested by every HTTP
@@ -31,9 +32,9 @@
 #define	METHOD_POST	1
 
 //SSL certificates
-#define FILE_CERT_ROOT	"/ext/myfile/sslfile/ca_uruz.crt"
-#define FILE_CERT_CHAIN "/ext/myfile/sslfile/cli_uruz.crt"
-#define FILE_CERT_PRIVATE "/ext/myfile/sslfile/privkey_uruz.pem"
+#define FILE_CERT_ROOT	"/ext/q161pro/sslfile/ca_uruz.crt"
+#define FILE_CERT_CHAIN "/ext/q161pro/sslfile/cli_uruz.crt"
+#define FILE_CERT_PRIVATE "/ext/q161pro/sslfile/privkey_uruz.pem"
 
 
 /*

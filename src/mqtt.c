@@ -6,6 +6,7 @@
  */
 
 #include <string.h>
+#include <stdio.h>
 
 #include <MQTTFreeRTOS.h>
 
@@ -14,6 +15,7 @@
 #include <coredef.h>
 #include <struct.h>
 #include <poslib.h>
+#include <time.h>
 #include "../inc/number_helper.h"
 #include <MQTTClient.h>
 #include <MQTTFreeRTOS.h>
@@ -21,11 +23,17 @@
 #include "../inc/mqtt.h"
 #include "../inc/display.h"
 #include "../inc/utils.h"
-
 #define QRBMP "QRBMP.bmp"
 int mqttTopicRouter(MessageData *md);
+int getHour(void)   { return 11; }
+int getMinute(void) { return 10; }
+int getSecond(void) { return 52; }
 char qr_title[1024] = {0};
 Network network;
+MQTTClient g_mqttClient;
+Network g_network;
+// extern MQTTClient g_mqttClient;  // MQTT global
+// extern Network g_network;
 volatile int mqtt_connection_active = 0;
 
 void safe_mqtt_cleanup(MQTTClient *client, Network *net) {
@@ -306,6 +314,7 @@ static void onTopicMessageArrivedPOS(MessageData *md)
 {
 	// network.mqttclose(network.netContext);
 
+	MAINLOG_L1("Start onTopicMessageArrivedPOS");
 	unsigned char buf[1024];
 	unsigned char bcdtime[64], asc[12] = {0};
 	char *pChar, *pDot = NULL;
@@ -370,14 +379,30 @@ static void onTopicMessageArrivedStatic(MessageData *md)
 
 void splitStringPOS(unsigned char *extracted)
 {
-
-	MAINLOG_L1("split masuk sini POS");
+	MAINLOG_L1("start split masuk sini POS");
 	MAINLOG_L1("extracted: %s", extracted);
-	char *urlInvoice = get_token(3);
+	char formattedNumber[20];
+
+	secscrOpen_lib();
+	secscrSetBackLightMode_lib(2);
+	secscrSetAttrib_lib(4, 1);
+	secscrCls_lib();
+
 	char buf[3];  // enough for "10", "9", ..., "1" and '\0'
 	int result = split(extracted, ";");
 	if (result > 0)
 	{
+		char *urlInvoice = get_token(3);
+		char *partnerRef = get_token(4);
+
+		saveSSID("/ext/partner_ref_pos.txt", "");
+
+		if(partnerRef != NULL && strlen(partnerRef) > 0){
+			saveSSID("/ext/partner_ref_pos.txt", partnerRef);
+			MAINLOG_L1("partnerRef: %s", partnerRef);
+		}
+
+		MAINLOG_L1("partnerRef: %s", partnerRef);
 		if (strcmp((char *)get_token(0), "OK") == 0)
 		{
 				//index 0 = ok
@@ -391,15 +416,71 @@ void splitStringPOS(unsigned char *extracted)
 			MAINLOG_L1("URLINVOICE: %s", get_token(3));
 
 			MAINLOG_L1("DIA OK DONG");
+			// formatRupiah(get_token(2), formattedNumber);
+			// secscrPrint_lib(0, 0, 0, formattedNumber);
 			ScrCls_Api();
 			ScrBrush_Api();
+			
+			{
+				char amtWords[256] = {0};
+				const char *amtTok = get_token(2);
+				if (amtTok && strlen(amtTok) > 0) {
+					amountToWordsID(amtTok, amtWords);
+				}
+				
+				if (amtWords[0]) {
+					char sentence[384] = {0};
+					snprintf(sentence, sizeof(sentence), "%s rupiah", amtWords);
+					AppPlayTip(sentence);
+				}
+			}
+
 		if (urlInvoice != NULL && strcmp(urlInvoice, "null") != 0 && strlen(urlInvoice) > 0) {
-				  AppPlayTip("Payment Success");
-			    int ret = QREncodeString(urlInvoice, 3, 3, QRBMP, 3);
+				char amtClean[64] = {0};
+                const char *amtSrc = get_token(2);
+                if (amtSrc) {
+                    int j = 0;
+                    for (int i = 0; amtSrc[i] != '\0' && j < (int)sizeof(amtClean)-1; i++) {
+                        if (amtSrc[i] >= '0' && amtSrc[i] <= '9') {
+                            amtClean[j++] = amtSrc[i];
+                        } else if (amtSrc[i] == '.' || amtSrc[i] == ',') {
+                            break; 
+                        }
+                    }
+                    if (j == 0) strcpy(amtClean, "0");
+                } else {
+                    strcpy(amtClean, "0");
+                }
+
+                formatRupiah(amtClean, formattedNumber);
+
+                size_t flen = strlen(formattedNumber);
+                if (flen >= 3) {
+                    char *tail = formattedNumber + flen - 3;
+                    if ((tail[0] == '.' || tail[0] == ',') && tail[1] == '0' && tail[2] == '0') {
+                        *tail = '\0';
+                    }
+                }
+				char successMsg[64];
+				char amountMsg[64];
+				char secDisplay[40];
+
+				MAINLOG_L1("url invoice setelah bayar = %s", urlInvoice);
+			    int ret = QREncodeString(urlInvoice, 3, 3, QRBMP, 3.4);
 					if (ret == 0) {
-						ScrCls_Api();  // clear entire screen         // show QR
-						ScrDisp_Api(LINE2, 0, "E-Receipt", CDISP);        // show title
-						ScrDispImage_Api(QRBMP, 30, 65);         
+						ScrCls_Api();  
+						MAINLOG_L1("Formatted number: %s", formattedNumber);
+						snprintf(successMsg, sizeof(successMsg), "Payment Success ");
+						snprintf(amountMsg, sizeof(amountMsg), "Rp. %s", formattedNumber);
+   						 ScrDisp_Api(LINE1, 0, successMsg, CDISP);
+						 ScrDisp_Api(LINE2, 0, amountMsg, CDISP);
+						 secscrCls_lib();
+
+						 snprintf(secDisplay, sizeof(secDisplay), "Rp. %s", formattedNumber);
+   						 secscrPrint_lib(0, 0, 0, secDisplay);
+
+						ScrDisp_Api(LINE4, 0, "E-Receipt", CDISP);        // show title
+						ScrDispImage_Api(QRBMP, 80, 95);         
 						for (int i = 30; i > 0; i--) {
 								char buf[4];  // to hold "30" + '\0'
 								if (i >= 100) {
@@ -415,20 +496,27 @@ void splitStringPOS(unsigned char *extracted)
 										buf[0] = '0' + i;
 										buf[1] = '\0';
 								}
-								ScrDisp_Api(LINE1, 0, "          ", CDISP);        // clear old number
-								ScrDisp_Api(LINE1, 0, buf, CDISP);                // show countdown
-								Delay_Api(1000);                                  // wait 1 second
+								ScrDisp_Api(LINE3, 0, "          ", CDISP);     
+								ScrDisp_Api(LINE3, 0, buf, CDISP); 
+								int key = GetKey_Api();
+								if (key == ESC || key == ENTER) {
+									MAINLOG_L1("QR closed early by key: %d", key);
+									break;
+								}               
+								Delay_Api(1000);                                 
 						}
+						secscrCls_lib();
 						DispMainFace();
 						
 					} 
 					else {
 						MAINLOG_L1("RET BUKAN 0 FIX SOMETHING BAD HAPPENED");
+						secscrCls_lib();
+
 						ScrDisp_Api(LINE4, 0, "Gagal generate QR", CDISP);
 					}
 					// QRpos("POS2");
 			} else {
-				AppPlayTip("Payment Success");
 				ScrCls_Api();
 				ScrDisp_Api(LINE2, 0, "Payment Success", CDISP);
 			}
@@ -443,12 +531,15 @@ void splitStringPOS(unsigned char *extracted)
 			MAINLOG_L1("QRContent: %s", get_token(0));
 			MAINLOG_L1("Amount: %s", get_token(1));
 			MAINLOG_L1("UUID: %s", get_token(2));
+			MAINLOG_L1("PARNTER REFERENCE: %s", get_token(4));
+			MAINLOG_L1("INVOICE: %s", get_token(3));
 			QRDispTestNobu(get_token(0), get_token(1), "qr");
 		}
 	} else {
 		MAINLOG_L1("Result is null");
 	}
 }
+
 static void onTopicMessageArrivedQR(MessageData *md)
 {
 	unsigned char buf[1024];
@@ -527,12 +618,15 @@ static void onTopicMessageArrivedQRV2(MessageData *md)
 
 static unsigned char pSendBuf[1024];
 static unsigned char pReadBuf[1024];
-int mQTTMainThread(char *param)
+int mQTTMainThread(char *param, int *singleRun)
 {
  	u8 Key;
 	int ret, err;
-	Network n;
-	MQTTClient c;
+	Network n;        
+    MQTTClient c;
+	g_mqttClient = c;
+	g_network = n;
+
 	char string[200] = "";
 
 	
@@ -541,6 +635,17 @@ int mQTTMainThread(char *param)
 	int Len2 = 0, ret4 = 0, loc2 = 0;
 	int fileLen2 = 0;
 	int diff2 = 0;
+
+	char merchant_id_nobu[128] = {0};
+    char external_store_id[128] = {0};
+    int fileLenMerchant = GetFileSize_Api("/ext/merchant_id_nobu.txt");
+    int fileLenStore = GetFileSize_Api("/ext/external_store_id.txt");
+    ReadFile_Api("/ext/merchant_id_nobu.txt", merchant_id_nobu, 0, &fileLenMerchant);
+    ReadFile_Api("/ext/external_store_id.txt", external_store_id, 0, &fileLenStore);
+    merchant_id_nobu[fileLenMerchant] = '\0';
+    external_store_id[fileLenStore] = '\0';
+	MAINLOG_L1("merchant_id_nobu: %s", merchant_id_nobu);
+	MAINLOG_L1("external_store_id: %s", external_store_id);
 
 	// if (mqtt_connection_active) {
 	// 		MAINLOG_L1("MQTT connection already active, mQTTMainThread exited early");
@@ -568,11 +673,33 @@ int mQTTMainThread(char *param)
 		WaitEnterAndEscKey_Api(12);
 		return;
 	}
+
 	if (strcmp((char *)param, "payment-pos") == 0)
 	{
 		MAINLOG_L1("masuk if");
 		strcpy(G_sys_param.mqtt_topic, "aisino/dynamicQR/payment-pos/");
 	}
+
+	// if (strcmp((char *)param, "payment-pos") == 0) {
+
+	// 	sprintf(G_sys_param.mqtt_topic, "aisino/dynamicQR/payment-pos/");
+	// 	MAINLOG_L1("MQTT topic (serial) = %s", G_sys_param.mqtt_topic);
+	// 	// ret = MQTTSubscribe(&c, G_sys_param.mqtt_topic, G_sys_param.mqtt_qos, onTopicMessageArrivedPOS);
+	// 	MAINLOG_L1("MQTTSubscribe serial topic result: %d", ret);
+
+	// 	if (strlen(merchant_id_nobu) > 0 && strlen(external_store_id) > 0) {
+	// 		char custom_topic[256] = {0};
+	// 		sprintf(custom_topic, "aisino/dynamicQR/payment-pos/%s-%s",
+	// 				merchant_id_nobu, external_store_id);
+	// 		MAINLOG_L1("MQTT topic (merchant-store) = %s", custom_topic);
+	// 		ret = MQTTSubscribe(&c, custom_topic, G_sys_param.mqtt_qos, onTopicMessageArrivedPOS);
+	// 		MAINLOG_L1("MQTTSubscribe merchant-store topic result: %d", ret);
+	// 	} else {
+	// 		MAINLOG_L1("ERROR: merchant_id_nobu atau external_store_id kosong, topic custom tidak di-subscribe");
+	// 	}
+	// }
+
+
 	else if (strcmp((char *)param, "payment") == 0)
 	{
 		MAINLOG_L1("masuk else if");
@@ -696,6 +823,12 @@ int mQTTMainThread(char *param)
 		return;
 	}
 
+	if( singleRun == 1 ){
+		int	ret = MQTTYield(&c, 1000);
+		MAINLOG_L1("MQTTYield: %d", ret);
+		return;
+	}
+
 	MAINLOG_L1("MQTT Connected");
 	int limit = 90;
 	char str[256];
@@ -721,6 +854,8 @@ int mQTTMainThread(char *param)
 				break;
 			}
 		}
+
+		MAINLOG_L1("G_sys_param.con: %d", G_sys_param.con);
 
 		if (G_sys_param.con == 0)
 		{
@@ -939,45 +1074,86 @@ int mqttMainThreadV2()
 // aisino/dynamicQR/pos/<serial_number>
 // aisino/dynamicQR/registration/<serial_number>
 // aisino/dynamicQR/nobu_nfc/<serial_number>
-int extract_third_segment(const char *topic, char *third_segment) {
-    if (!topic || !third_segment) {
-        MAINLOG_L1("[TOK3] NULL input pointer");
+
+// int extract_third_segment(const char *topic, char *third_segment) {
+//     if (!topic || !third_segment) {
+//         MAINLOG_L1("[TOK3] NULL input pointer");
+//         return 1;
+//     }
+
+//     char copy[512];
+//     strncpy(copy, topic, sizeof(copy) - 1);
+//     copy[sizeof(copy) - 1] = '\0';
+
+//     MAINLOG_L1("[TOK3] Original Topic: [%s]", copy);
+
+//     // Optional: Print hex of topic string to debug hidden characters
+//     for (int i = 0; copy[i] != '\0'; i++) {
+//         MAINLOG_L1("[TOK3] char[%d] = 0x%02X (%c)", i, (unsigned char)copy[i], copy[i]);
+//     }
+
+//     char *token = strtok(copy, "/");
+//     int count = 0;
+
+//     while (token != NULL) {
+//         count++;
+//         MAINLOG_L1("[TOK3] Token %d: %s", count, token);
+
+//         if (count == 3) {
+//             strncpy(third_segment, token, 99);
+//             third_segment[99] = '\0';
+//             MAINLOG_L1("[TOK3] ✅ Third segment extracted: %s", third_segment);
+//             return 0;
+//         }
+
+//         token = strtok(NULL, "/");
+//     }
+
+//     MAINLOG_L1("[TOK3] Not enough segments in topic");
+//     return 1;
+// }
+
+
+int extract_third_segment_len(const char *topic, int topic_len, char *third_segment) {
+    if (!topic || !third_segment || topic_len <= 0) {
+        MAINLOG_L1("[TOK3] NULL input pointer atau length invalid");
         return 1;
     }
 
-    char copy[512];
-    strncpy(copy, topic, sizeof(copy) - 1);
-    copy[sizeof(copy) - 1] = '\0';
-
-    MAINLOG_L1("[TOK3] Original Topic: [%s]", copy);
-
-    // Optional: Print hex of topic string to debug hidden characters
-    for (int i = 0; copy[i] != '\0'; i++) {
-        MAINLOG_L1("[TOK3] char[%d] = 0x%02X (%c)", i, (unsigned char)copy[i], copy[i]);
-    }
-
-    char *token = strtok(copy, "/");
     int count = 0;
+    const char *start = NULL;
+    const char *end   = NULL;
 
-    while (token != NULL) {
-        count++;
-        MAINLOG_L1("[TOK3] Token %d: %s", count, token);
-
-        if (count == 3) {
-            strncpy(third_segment, token, 99);
-            third_segment[99] = '\0';
-            MAINLOG_L1("[TOK3] ✅ Third segment extracted: %s", third_segment);
-            return 0;
+    for (int i = 0; i < topic_len; i++) {
+        if (topic[i] == '/') {
+            count++;
+            if (count == 2) {
+                start = topic + i + 1;  
+            } else if (count == 3) {
+                end = topic + i;  
+                break;
+            }
         }
-
-        token = strtok(NULL, "/");
     }
 
-    MAINLOG_L1("[TOK3] ❌ Not enough segments in topic");
-    return 1;
+    if (count < 2) {
+        MAINLOG_L1("[TOK3] Not enough segments in topic");
+        return 1;
+    }
+
+    if (!end) {
+        end = topic + topic_len;
+    }
+
+    int len = end - start;
+    if (len > 99) len = 99;
+
+    memcpy(third_segment, start, len);
+    third_segment[len] = '\0';
+
+    MAINLOG_L1("[TOK3] ✅ Third segment extracted: %s", third_segment);
+    return 0;
 }
-
-
 
 void onTopicMessageArrivedNFC(MessageData *md) {
 	network.mqttclose(network.netContext);
@@ -1007,9 +1183,16 @@ void onTopicMessageArrivedNFC(MessageData *md) {
 		MAINLOG_L1("MQTT parse partnerReferenceNo failed");
 		return;
 	}
-	MAINLOG_L1("partnerReferenceNo = %s", partnerReferenceNo->valuestring);
 
-	CardNFC(partnerReferenceNo->valuestring, amount->valueint64);
+	MAINLOG_L1("partnerReferenceNo = %s", partnerReferenceNo->valuestring);
+	cJSON *invoiceUrl = cJSON_GetObjectItem(mqttBody, "invoiceUrl");
+	if ((invoiceUrl->valuestring == NULL)) {
+		MAINLOG_L1("MQTT parse invoiceUrl failed");
+		return;
+	}
+	MAINLOG_L1("invoiceUrl = %s", invoiceUrl->valuestring);
+
+	CardNFC(partnerReferenceNo->valuestring, amount->valueint64, invoiceUrl->valuestring);
 }
 
 // int mqttTopicRouter(MessageData *md) {
@@ -1050,69 +1233,147 @@ void onTopicMessageArrivedNFC(MessageData *md) {
 // 	return 0;
 // }
 
+
+
+
+// int mqttTopicRouter(MessageData *md) {
+// 	MAINLOG_L1("mqtt start Topic Router Run");
+
+// 	unsigned char buf[512];
+// 	MQTTMessage *m = md->message;
+
+// 	memcpy(buf, md->topicName->lenstring.data, md->topicName->lenstring.len);
+// 	buf[md->topicName->lenstring.len] = 0;
+// 	MAINLOG_L1("MQTT recv topic:%s", buf);
+
+// 	memcpy(buf, m->payload, m->payloadlen);
+// 	buf[m->payloadlen] = 0;
+// 	MAINLOG_L1("MQTT recv message:%s", buf);
+
+// 	char third_segment[256];
+// 	MAINLOG_L1("AKU DISINIII >>>>>>>");
+// 	int ret = extract_third_segment(md->topicName->lenstring.data, third_segment);
+// 	MAINLOG_L1("ret: %d", ret);
+// 	if (ret != 0) {
+// 		return -1;
+// 	}
+// 	MAINLOG_L1("third_segment23: %s", third_segment);
+
+// 	strcpy(receivedTopic, third_segment);
+
+// 	if (strcmp(third_segment, "payment-pos") == 0) {
+// 		int found = 0;
+
+// 		if (enabled_menu != NULL) {
+// 			char *menu_str = cJSON_Print(enabled_menu);
+// 			MAINLOG_L1("enabled_menu content = %s", menu_str);
+// 			free(menu_str); 
+// 			cJSON *arr = cJSON_GetObjectItem(enabled_menu, "enabled_menu");
+// 			if (arr && cJSON_IsArray(arr)) {
+// 				int count = cJSON_GetArraySize(arr);
+// 				for (int i = 0; i < count; i++) {
+// 					cJSON *item = cJSON_GetArrayItem(arr, i);
+// 					if (item && strcmp(item->valuestring, "POS QR") == 0) {
+// 						found = 1;
+// 						break;
+// 					}
+// 				}
+// 			}
+// 		}
+
+// 		if (found) {
+// 			MAINLOG_L1("POS QR ditemukan di enabled_menu");
+// 			onTopicMessageArrivedPOS(md);
+// 		} else {
+// 			MAINLOG_L1("POS QR tidak ditemukan di enabled_menu. Abaikan.");
+// 		}
+// 	}
+// 	else if (strcmp(third_segment, "static") == 0) {
+// 		onTopicMessageArrivedStatic(md);
+// 	}
+// 	else if (strcmp(third_segment, "display-qr") == 0) {
+// 		onTopicMessageArrivedQRV2(md);
+// 	}
+// 	else if (strcmp(third_segment, "nobu_nfc") == 0) {
+// 		onTopicMessageArrivedNFC(md);
+// 	}
+
+// 	return 0;
+// }
+
+
+
 int mqttTopicRouter(MessageData *md) {
-	MAINLOG_L1("mqtt Topic Router Run");
+    MAINLOG_L1("mqtt start Topic Router Run");
 
-	unsigned char buf[512];
-	MQTTMessage *m = md->message;
+    unsigned char buf[512];
+    MQTTMessage *m = md->message;
 
-	memcpy(buf, md->topicName->lenstring.data, md->topicName->lenstring.len);
-	buf[md->topicName->lenstring.len] = 0;
-	MAINLOG_L1("MQTT recv topic:%s", buf);
+    // Buat topic string untuk log (null-terminated)
+    memcpy(buf, md->topicName->lenstring.data, md->topicName->lenstring.len);
+    buf[md->topicName->lenstring.len] = 0;
+    MAINLOG_L1("MQTT recv topic: %s", buf);
 
-	memcpy(buf, m->payload, m->payloadlen);
-	buf[m->payloadlen] = 0;
-	MAINLOG_L1("MQTT recv message:%s", buf);
+    // Buat payload string untuk log
+    memcpy(buf, m->payload, m->payloadlen);
+    buf[m->payloadlen] = 0;
+    MAINLOG_L1("MQTT recv message: %s", buf);
 
-	char third_segment[256];
-	MAINLOG_L1("AKU DISINIII >>>>>>>");
-	int ret = extract_third_segment(md->topicName->lenstring.data, third_segment);
-	MAINLOG_L1("ret: %d", ret);
-	if (ret != 0) {
-		return -1;
-	}
-	MAINLOG_L1("third_segment23: %s", third_segment);
+    // Ambil segmen ke-3
+    char third_segment[100];
+    MAINLOG_L1("AKU DISINIII >>>>>>>");
+    int ret = extract_third_segment_len(
+        md->topicName->lenstring.data,
+        md->topicName->lenstring.len,
+        third_segment
+    );
+    MAINLOG_L1("ret: %d", ret);
+    if (ret != 0) {
+        return -1;
+    }
+    MAINLOG_L1("third_segment23: %s", third_segment);
 
-	strcpy(receivedTopic, third_segment);
+    strcpy(receivedTopic, third_segment);
 
-	if (strcmp(third_segment, "payment-pos") == 0) {
-		int found = 0;
+    // Routing berdasarkan topic
+    if (strcmp(third_segment, "payment-pos") == 0) {
+        int found = 0;
 
-		if (enabled_menu != NULL) {
-			char *menu_str = cJSON_Print(enabled_menu);
-			MAINLOG_L1("enabled_menu content = %s", menu_str);
-			free(menu_str); 
-			cJSON *arr = cJSON_GetObjectItem(enabled_menu, "enabled_menu");
-			if (arr && cJSON_IsArray(arr)) {
-				int count = cJSON_GetArraySize(arr);
-				for (int i = 0; i < count; i++) {
-					cJSON *item = cJSON_GetArrayItem(arr, i);
-					if (item && strcmp(item->valuestring, "POS QR") == 0) {
-						found = 1;
-						break;
-					}
-				}
-			}
-		}
+        if (enabled_menu != NULL) {
+            char *menu_str = cJSON_Print(enabled_menu);
+            MAINLOG_L1("enabled_menu content = %s", menu_str);
+            free(menu_str);
 
-		if (found) {
-			MAINLOG_L1("POS QR ditemukan di enabled_menu");
-			onTopicMessageArrivedPOS(md);
-		} else {
-			MAINLOG_L1("POS QR tidak ditemukan di enabled_menu. Abaikan.");
-		}
-	}
-	else if (strcmp(third_segment, "static") == 0) {
-		onTopicMessageArrivedStatic(md);
-	}
-	else if (strcmp(third_segment, "display-qr") == 0) {
-		onTopicMessageArrivedQRV2(md);
-	}
-	else if (strcmp(third_segment, "nobu_nfc") == 0) {
-		onTopicMessageArrivedNFC(md);
-	}
+            cJSON *arr = cJSON_GetObjectItem(enabled_menu, "enabled_menu");
+            if (arr && cJSON_IsArray(arr)) {
+                int count = cJSON_GetArraySize(arr);
+                for (int i = 0; i < count; i++) {
+                    cJSON *item = cJSON_GetArrayItem(arr, i);
+                    if (item && strcmp(item->valuestring, "POS QR") == 0) {
+                        found = 1;
+                        break;
+                    }
+                }
+            }
+        }
 
-	return 0;
+        if (found) {
+            MAINLOG_L1("POS QR ditemukan di enabled_menu");
+            onTopicMessageArrivedPOS(md);
+        } else {
+            MAINLOG_L1("POS QR tidak ditemukan di enabled_menu. Abaikan.");
+        }
+    }
+    else if (strcmp(third_segment, "static") == 0) {
+        onTopicMessageArrivedStatic(md);
+    }
+    else if (strcmp(third_segment, "display-qr") == 0) {
+        onTopicMessageArrivedQRV2(md);
+    }
+    else if (strcmp(third_segment, "nobu_nfc") == 0) {
+		MAINLOG_L1("masuk nobu_nfc");
+        onTopicMessageArrivedNFC(md);
+    }
+
+    return 0;
 }
-
-

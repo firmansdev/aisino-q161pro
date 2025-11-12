@@ -154,8 +154,13 @@ static int dev_savefile(char *filename, unsigned char *buf, int start, int len)
 {
 	int ret = 0;
 	ret = WriteFile_Api(filename, buf, start, len);
-	MAINLOG_L1("Q161Demo: WriteFile_Api ret = %d", ret);
-	return 0;
+	// MAINLOG_L1("Q161Demo: WriteFile_Api ret = %d", ret);
+	// return 0;
+
+	if (ret < 0) {
+		MAINLOG_L1("Q161Pro:WriteFile_Api error %d", ret);
+		return ret;
+	}
 }
 
 // Remove the space in the begining and end of the str
@@ -544,7 +549,7 @@ int httpDownload(char *url, int method, char *filename)
 	AppPlayTip("Connecting");
 
 	ret = dev_connect(&entry, CONNECT_TIMEOUT);
-	MAINLOG_L1("Q161Demo: dev_connect = %d", ret);
+	MAINLOG_L1("Q161Pro: dev_connect = %d", ret);
 	if (ret != 0){
 		AppPlayTip("Fail to connect to server");
 		ScrCls_Api();
@@ -587,10 +592,10 @@ int httpDownload(char *url, int method, char *filename)
 		}
 
 		total += ret;
-
+		 MAINLOG_L1("[httpDownload] Received %d bytes, total downloaded: %d", ret, total);
 		// If received payload is less than requested Range, this is the last range.
 		// If received payload is more than requested Range, the server does not support Range
-		if (ret != RECEIVE_RANGE)
+		if (ret < RECEIVE_RANGE)
 			break;
 	}
 
