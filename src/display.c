@@ -59,10 +59,12 @@ int payment_amount = 0;
 typedef void (*func_ptr)();
 
 void DispMainNobu();
+void DynamicNfcMenu();
 void QRpos();
 int WifiConnect();
 void DispMainNobuSetting();
 void SyncData();
+void SelectSettingsMenu();
 void listTransaction();
 void downloadUpdate();
 
@@ -95,6 +97,7 @@ const char *pszTitle = "Menu";
 // daftar text menu function
 const char *pszItems[] = {
 	"Dynamic QR",
+	"Dynamic NFC",
 	"Serial Number",
 	"List Transaction",
 	"Setting Wifi",
@@ -106,6 +109,7 @@ const int pszItemsCount = sizeof(pszItems) / sizeof(pszItems[0]);
 // daftar semua menu function
 const func_ptr menu_functions_list[] = {
 	DispMainNobu,
+	DynamicNfcMenu,
 	DispMainNobuSetting,
 	listTransaction,
 	WifiConnect,
@@ -144,7 +148,7 @@ void CardNFC(const char *partnerReferenceNo, const int amount, const char *invoi
     int key = 0;
 
     ScrCls_Api();
-    ScrDisp_Api(LINE4, 0, "Tap Your Card Here", CDISP);
+    ScrDisp_Api(LINE4, 0, "Tap Your QR NFC Here", CDISP);
     ScrDisp_Api(LINE6, 0, "Amount:", CDISP);
     ScrDisp_Api(LINE7, 0, tempAmount, CDISP);
     KBFlush_Api();
@@ -529,7 +533,76 @@ void QRCodeDisp()
 
 }
 
+ void generatePartnerReference(char *buffer, size_t bufferLen)
+{
+    if (buffer == NULL || bufferLen == 0) {
+        return;
+    }
 
+    unsigned char rawTime[8] = {0};
+    char timestamp[20] = {0};
+
+    GetSysTime_Api(rawTime);
+    BcdToAsc_Api(timestamp, rawTime, 14);
+
+    snprintf(buffer, bufferLen, "AISINO-%s", timestamp);
+}
+
+
+void DynamicNfcMenu(void)
+{
+    unsigned char amountBuf[16] = {0};
+    char formattedAmount[32] = {0};
+    int digitCount;
+    int amountValue;
+
+    while (1) {
+        ScrCls_Api();
+        ScrDisp_Api(LINE1, 0, "Dynamic NFC", CDISP);
+        ScrDisp_Api(LINE2, 0, "Masukkan Nominal", CDISP);
+        ScrBrush_Api();
+
+        digitCount = inputNumber(amountBuf, 4, 1, LINE4, 0, CDISP);
+        if (digitCount < 0) {
+            ScrCls_Api();
+            ScrDisp_Api(LINE1, 0, "Transaksi dibatalkan", CDISP);
+            WaitEnterAndEscKey_Api(5);
+            return;
+        }
+        if (digitCount == 0) {
+            ScrCls_Api();
+            ScrDisp_Api(LINE1, 0, "Nominal Tidak", CDISP);
+            ScrDisp_Api(LINE2, 0, "Boleh Kosong", CDISP);
+            WaitEnterAndEscKey_Api(5);
+            continue;
+        }
+
+        if (digitCount >= (int)sizeof(amountBuf)) {
+            digitCount = sizeof(amountBuf) - 1;
+        }
+        amountBuf[digitCount] = '\0';
+
+        amountValue = atoi((char *)amountBuf);
+        if (amountValue < 1) {
+            ScrCls_Api();
+            ScrDisp_Api(LINE1, 0, "Pastikan Jumlah Lebih", CDISP);
+            ScrDisp_Api(LINE2, 0, "Dari 1 Rupiah", CDISP);
+            WaitEnterAndEscKey_Api(5);
+            continue;
+        }
+        break;
+    }
+
+    formatRupiah((char *)amountBuf, formattedAmount);
+    MAINLOG_L1("Dynamic NFC amount = %s (raw=%s)", formattedAmount, amountBuf);
+
+    char partnerReference[80] = {0};
+    generatePartnerReference(partnerReference, sizeof(partnerReference));
+    saveSSID("/ext/partner_ref_pos.txt", partnerReference);
+    MAINLOG_L1("Dynamic NFC partnerReference = %s", partnerReference);
+
+    CardNFC(partnerReference, amountValue, "");
+}
 
 
 int hitCallbackApi(const char *partnerReferenceNo, const char *serialNumber, char *responseOut)
@@ -776,11 +849,12 @@ int WaitEvent(void)
 #endif
 
 #ifndef MENU_UP_TEXT
-  #define MENU_UP_TEXT   "^  Volume Up"
+  #define MENU_UP_TEXT   "UP  Volume Up"
 #endif
 #ifndef MENU_DOWN_TEXT
-  #define MENU_DOWN_TEXT "v  Volume Down"
+  #define MENU_DOWN_TEXT "DOWN  Volume Down"
 #endif
+
 
 static int isArrowUpKey(int key) {
     int match = 0;
@@ -845,7 +919,7 @@ static int isArrowDownKey(int key) {
 //     MAINLOG_L1("[VOL] showVolumeBar level=%d line='%s'", lvl, line);
 // }
 
-// Mute-aware wrapper: call the real AppPlayTip only when audible
+
 void PlayTipIfAudible(const char *msg) {
 	if (G_sys_param.sound_level > 0) {
 		if (real_AppPlayTip) real_AppPlayTip((char *)msg);
@@ -855,16 +929,16 @@ void PlayTipIfAudible(const char *msg) {
 	}
 }
 
-// Mute-aware wrapper for Beep
 void BeepIfAudible(int times) {
 	if (G_sys_param.sound_level > 0) {
-		// Call poslib's Beep_Api directly when audible. This assumes poslib
-		// provides Beep_Api(unsigned char) — most platforms do.
+		
 		Beep_Api((unsigned char)times);
 	} else {
 		MAINLOG_L1("[VOL] Muted, suppress beep x%d", times);
 	}
 }
+
+static int g_volumeHotkeysEnabled = 0;
 
 static void showVolumeBar(void) {
     char line[64];
@@ -943,7 +1017,7 @@ static int handleVolumeHotkey(int key) {
     if (handled) showVolumeBar();
     return handled;
 }
-int ShowMenuItem(char *Title, const char *menu[], u8 ucLines, u8 ucStartKey, u8 ucEndKey, int IsShowX, u8 ucTimeOut)
+int ShowMenuItem(const char *Title, const char *menu[], u8 ucLines, u8 ucStartKey, u8 ucEndKey, int IsShowX, u8 ucTimeOut)
 {
 	MAINLOG_L1("ucStartKey = %d", ucStartKey);
 	MAINLOG_L1("ucEndKey = %d", ucEndKey);
@@ -971,7 +1045,7 @@ int ShowMenuItem(char *Title, const char *menu[], u8 ucLines, u8 ucStartKey, u8 
 	{
 		ScrClsRam_Api();
 		if (IsShowTitle)
-			ScrDisp_Api(LINE1, 0, Title, CDISP);
+			ScrDisp_Api(LINE1, 0, (char *)Title, CDISP);
 		Cur_Line = LINE1 + IsShowTitle;
 
 		for (i = 0; i < OneScreenLines; i++)
@@ -986,13 +1060,15 @@ int ShowMenuItem(char *Title, const char *menu[], u8 ucLines, u8 ucStartKey, u8 
 			ScrDispRam_Api(Cur_Line++, 0, dispbuf, FDISP);
 		}
 
-		showVolumeBar();
+		if (g_volumeHotkeysEnabled) {
+			showVolumeBar();
+		}
 
 		ScrBrush_Api();
 		MAINLOG_L1("after ScrBrush_Api");
 		nkey = WaitAnyKey_Api(ucTimeOut);
 		MAINLOG_L1("WaitAnyKey_Api aa:%d", nkey);
-		if (handleVolumeHotkey(nkey)) {
+		if (g_volumeHotkeysEnabled && handleVolumeHotkey(nkey)) {
 			MAINLOG_L1("[MENU] Volume hotkey consumed key=%d (0x%02X), kembali redraw menu", nkey, nkey);
             continue;
         }
@@ -1029,30 +1105,31 @@ int ShowMenuItem(char *Title, const char *menu[], u8 ucLines, u8 ucStartKey, u8 
 
 void MenuThread()
 {
-	int Result = 0;
-
-	while (1)
-	{
-		DispMainFace();
-		mqttMainThreadV2();
-		SelectMainMenu();
-	}
+    while (1)
+    {
+        DispMainFace();
+        // mqttMainThreadV2();     
+        // SelectMainMenu();
+		int reason = mqttMainThreadV2(); 
+		MAINLOG_L1("[MenuThread] mqttMainThreadV2 reason=%d", reason);
+        if (reason == 1) {
+            SelectMainMenu();
+        }
+    }
 }
 
-// Function to check if a value exists in the truth array
 int exists_in_truth_values(const char *value, const char *truth_values[], size_t truth_size)
 {
 	for (size_t i = 0; i < truth_size; i++)
 	{
 		if (strcmp(truth_values[i], value) == 0)
 		{
-			return 1; // Found
+			return 1;
 		}
 	}
-	return 0; // Not found
+	return 0; 
 }
 
-// Function to find the index of a cJSON item in an array
 int find_index_in_cJSON_array(cJSON *array, cJSON *item)
 {
 	int index = 0;
@@ -1065,7 +1142,7 @@ int find_index_in_cJSON_array(cJSON *array, cJSON *item)
 		}
 		index++;
 	}
-	return -1; // Not found (should not happen in our case)
+	return -1; 
 }
 
 void remove_invalid_items_from_json(cJSON *json_array, const char *truth_values[], size_t truth_size)
@@ -1073,7 +1150,6 @@ void remove_invalid_items_from_json(cJSON *json_array, const char *truth_values[
 	int index = 0;
 	cJSON *item = NULL;
 
-	// Iterate from last to first to avoid shifting issues
 	for (int i = cJSON_GetArraySize(json_array) - 1; i >= 0; i--)
 	{
 		item = cJSON_GetArrayItem(json_array, i);
@@ -1084,7 +1160,6 @@ void remove_invalid_items_from_json(cJSON *json_array, const char *truth_values[
 	}
 }
 
-// Handlers for main menu volume adjustments (added to main menu with arrow icons)
 static void VolumeUpFromMain(void) {
 	if (G_sys_param.sound_level >= 5) {
 		PlayTipIfAudible("Max volume");
@@ -1103,13 +1178,12 @@ static void VolumeUpFromMain(void) {
 static void VolumeDownFromMain(void) {
 	if (G_sys_param.sound_level <= 0) {
 		MAINLOG_L1("[VOL] Already muted");
-		// optionally play a tip: PlayTipIfAudible("Muted"); but stay silent as per mute rule
+	
 	} else {
 		G_sys_param.sound_level--;
 		saveParam();
 		if (G_sys_param.sound_level == 0) {
 			MAINLOG_L1("[VOL] Mute activated");
-			// suppressed tip when hitting 0 to respect mute state
 		} else {
 			PlayTipIfAudible("Volume down");
 		}
@@ -1195,12 +1269,9 @@ void SelectMainMenu(void)
 				++included_menu_size;
 		}
 
-		// Build display list and selectable mapping separately so we can insert
-		// info-only items (no numbers, no action) like Volume Up/Down.
-		int display_count = 0;     // total lines shown on screen (including info-only)
-		int selectable_count = 0;  // items that can be selected by number keys
+		int display_count = 0;     
+		int selectable_count = 0; 
 
-		// filter included menu with enabled_menu (selectable)
 		for (int i = 0; i < included_menu_size; ++i) {
 			char *item = included_menus[i];
 
@@ -1222,8 +1293,6 @@ void SelectMainMenu(void)
 
 		MAINLOG_L1("selectable_count (after included) = %d", selectable_count);
 
-		// insert all excluded menus (still selectable), and after 'Update App' add
-		// info-only Volume items without numbers
 		for (int i = 0; i < excluded_menu_size; ++i) {
 			char *item = excluded_menus[i];
 
@@ -1238,15 +1307,14 @@ void SelectMainMenu(void)
 					++display_count;
 					++selectable_count;
 
-					// After 'Update App' show info-only volume lines (no numbers, no action)
-					// Use plain ASCII text to avoid encoding/render issues on device UI.
 					if (strcmp(pszItems[j], "Update App") == 0) {
-						strcpy(menus[display_count], MENU_UP_TEXT);
+						sprintf(menus[display_count], "%d. Settings Volume", selectable_count + 1);
+						// strcpy(menus[display_count], "Settings Volume");
 						MAINLOG_L1("Masukkin Info-Only %d = %s", display_count, menus[display_count]);
+						func_ptr settings_volume_func = SelectSettingsMenu;
+                        utarray_push_back(menu_functions_used, &settings_volume_func);
 						++display_count;
-						strcpy(menus[display_count], MENU_DOWN_TEXT);
-						MAINLOG_L1("Masukkin Info-Only %d = %s", display_count, menus[display_count]);
-						++display_count;
+						++selectable_count;
 					}
 
 					break;
@@ -1254,7 +1322,6 @@ void SelectMainMenu(void)
 			}
 		}
 
-		// Show the full display list, but only allow selecting 1..selectable_count
 		nSelcItem = ShowMenuItem(pszTitle, menus, display_count, DIGITAL1, DIGITAL1 + selectable_count - 1, 0, 60);
 		MAINLOG_L1("Selected menu number = %d", nSelcItem);
 
@@ -1320,27 +1387,254 @@ void downloadUpdate()
 	set_tms_download_flag(1);
 }
 
+// void listTransaction()
+// {
+// 	ScrClsRam_Api();
+// 	ScrDisp_Api(LINE1, 0, "List Transaction", CDISP);
+// 	char *input_json = "| | | {\"data\":[{\"id\":\"111\",\"tanggal\":\"12/06/24\",\"status\":\"0\",\"jam\":\"15:20\"},{\"id\":\"112\",\"tanggal\":\"12/06/24\",\"status\":\"0\",\"jam\":\"15:20\"}]} + + +";
+
+// 	char *json_string = preprocessJsonString(input_json);
+// 	MAINLOG_L1("parsing JSON:%s", json_string);
+// 	cJSON *json = cJSON_Parse(json_string);
+
+// 	if (json == NULL)
+// 	{
+// 		MAINLOG_L1("Error parsing JSON: %s\n", cJSON_GetErrorPtr());
+// 		free(json_string); // Free dynamically allocated memory
+// 		return;
+// 	}
+// 	MAINLOG_L1("Parsed JSON:\n%s\n", cJSON_Print(json));
+// 	cJSON_Delete(json);
+// 	free(json_string);
+// 	return;
+// }
+
+static void showInvoiceQR(const char *tanggal, const char *amountRaw, const char *invoice) {
+    if (!invoice || !*invoice) {
+        ScrClsRam_Api();
+        ScrDisp_Api(LINE1, 0, "Invoice kosong", CDISP);
+        ScrBrush_Api();
+        Delay_Api(2000);
+        return;
+    }
+    char amtFmt[32] = {0};
+    if (amountRaw && *amountRaw) {
+        formatRupiah(amountRaw, amtFmt);
+    } else {
+        strcpy(amtFmt, "0");
+    }
+    int qrRet = QREncodeString(invoice, 3, 3, QRBMP, 3.4);
+    ScrClsRam_Api();
+    ScrDisp_Api(LINE1, 0, "Invoice QR", CDISP);
+    ScrDisp_Api(LINE2, 0, tanggal ? tanggal : "-", CDISP);
+    char amtLine[48];
+    snprintf(amtLine, sizeof(amtLine), "Rp. %s", amtFmt);
+    ScrDisp_Api(LINE3, 0, amtLine, CDISP);
+    if (qrRet == 0) {
+        ScrDispImage_Api(QRBMP, 75, 75);
+    } else {
+        ScrDisp_Api(LINE5, 0, "QR gagal", CDISP);
+    }
+    ScrDisp_Api(11, 0, "[ESC] Kembali", CDISP);
+    ScrBrush_Api();
+    WaitEnterAndEscKey_Api(120);
+}
+
+
+static void renderTxnPage(cJSON *arr, int page, int perPage) {
+    int total = cJSON_GetArraySize(arr);
+    int start = page * perPage;
+    int end = start + perPage;
+    if (end > total) end = total;
+
+    ScrClsRam_Api();
+    char header[48];
+    snprintf(header, sizeof(header), "List Transaction");
+    ScrDisp_Api(LINE1, 0, header, CDISP);
+    ScrDisp_Api(LINE2, 0, " Pilih [1-5]", CDISP);
+    ScrDisp_Api(LINE3, 0, "Tgl        Amount", CDISP);
+    int line = LINE4;
+    for (int i = start; i < end; ++i) {
+        cJSON *item = cJSON_GetArrayItem(arr, i);
+        if (!item) break;
+
+
+        cJSON *tanggal = cJSON_GetObjectItem(item, "trans_date");
+        cJSON *amount  = cJSON_GetObjectItem(item, "amount");
+
+        char amtRaw[32] = {0};
+        if (amount && amount->valuestring) {
+            const char *src = amount->valuestring;
+            int j = 0;
+            for (int k = 0; src[k] != '\0' && j < (int)sizeof(amtRaw)-1; ++k) {
+                if (src[k] >= '0' && src[k] <= '9') {
+                    amtRaw[j++] = src[k];
+                } else if (src[k] == '.' || src[k] == ',') {
+                    break;
+                }
+            }
+            if (j == 0) strcpy(amtRaw, "0");
+        } else {
+            strcpy(amtRaw, "0");
+        }
+
+        char amtFmt[24] = "-";
+        if (amtRaw[0]) {
+            char tmp[24] = {0};
+            formatRupiah(amtRaw, tmp);
+            snprintf(amtFmt, sizeof(amtFmt), "%s", tmp);
+        }
+
+        char tglShown[16] = "-";
+        if (tanggal && tanggal->valuestring) {
+            const char *td = tanggal->valuestring;
+            if (strlen(td) >= 10) {
+                memcpy(tglShown, td, 10);
+                tglShown[10] = '\0';
+            } else {
+                snprintf(tglShown, sizeof(tglShown), "%s", td);
+            }
+        }
+
+        char lineBuf[72];
+        snprintf(lineBuf, sizeof(lineBuf), "%-10s Rp. %-12s", tglShown, amtFmt);
+        ScrDisp_Api(line++, 0, lineBuf, CDISP);
+    }
+	ScrDisp_Api(11, 0, "[ESC] Kembali", CDISP);
+
+    ScrBrush_Api();
+}
+
+
 void listTransaction()
 {
 	ScrClsRam_Api();
-	ScrDisp_Api(LINE1, 0, "List Transaction", CDISP);
-	char *input_json = "| | | {\"data\":[{\"id\":\"111\",\"tanggal\":\"12/06/24\",\"status\":\"0\",\"jam\":\"15:20\"},{\"id\":\"112\",\"tanggal\":\"12/06/24\",\"status\":\"0\",\"jam\":\"15:20\"}]} + + +";
+    ScrDisp_Api(LINE1, 0, "List Transaction", CDISP);
+    ScrDisp_Api(LINE2, 0, "Loading...", CDISP);
+    ScrBrush_Api();
+    char serialNumber[256] = {0};
+    int snLen = GetFileSize_Api("/ext/serial.txt");
+    if (snLen > 0 && snLen < (int)sizeof(serialNumber)) {
+        ReadFile_Api("/ext/serial.txt", serialNumber, 0, &snLen);
+        serialNumber[snLen] = '\0';
+    }
 
-	char *json_string = preprocessJsonString(input_json);
-	MAINLOG_L1("parsing JSON:%s", json_string);
-	cJSON *json = cJSON_Parse(json_string);
+    char url[256];
+    if (serialNumber[0]) {
+        snprintf(url, sizeof(url),
+                 "/transactions-services/transactions/listTransactionAisino?serialNumber=%s",
+                 serialNumber);
+    } else {
+        snprintf(url, sizeof(url),
+                 "/transactions-services/transactions/listTransactionAisino");
+    }
 
-	if (json == NULL)
-	{
-		MAINLOG_L1("Error parsing JSON: %s\n", cJSON_GetErrorPtr());
-		free(json_string); // Free dynamically allocated memory
-		return;
-	}
-	MAINLOG_L1("Parsed JSON:\n%s\n", cJSON_Print(json));
-	cJSON_Delete(json);
-	free(json_string);
-	return;
+    cJSON *dummyObj = cJSON_CreateObject(); 
+    char apiResp[RECVPACKLEN] = {0};
+    int packLen = 0;
+    int httpRet = httpRequestJSON(&packLen, apiResp, url, "GET", dummyObj);
+    cJSON_Delete(dummyObj);
+
+    MAINLOG_L1("listTransaction GET httpRet=%d resp=%s", httpRet, apiResp);
+
+    cJSON *root = NULL;
+    cJSON *data = NULL;
+    if (httpRet == 0) {
+        root = cJSON_Parse(apiResp);
+        if (root) {
+            if (cJSON_IsArray(root)) {
+                data = root;
+            } else {
+                data = cJSON_GetObjectItem(root, "data");
+                if (!data) {
+                    cJSON *result = cJSON_GetObjectItem(root, "result");
+                    if (result) data = cJSON_GetObjectItem(result, "data");
+                }
+            }
+        }
+    }
+
+    if (!data || !cJSON_IsArray(data)) {
+        const char *fallback =
+            "{\"data\":["
+            "{\"trans_date\":\"2025-11-10 15:27:45\",\"amount\":\"1000\",\"invoice_url\":\"https://inv.example.com/i/111\"},"
+            "{\"trans_date\":\"2025-11-10 15:16:31\",\"amount\":\"250000\",\"invoice_url\":\"https://inv.example.com/i/112\"},"
+            "{\"trans_date\":\"2025-11-10 14:44:20\",\"amount\":\"3300\",\"invoice_url\":\"https://inv.example.com/i/113\"}"
+            "]}";
+        MAINLOG_L1("Fallback dummy JSON");
+        if (root) cJSON_Delete(root);
+        root = cJSON_Parse(fallback);
+        if (!root) {
+            ScrClsRam_Api();
+            ScrDisp_Api(LINE1, 0, "List Transaction", CDISP);
+            ScrDisp_Api(LINE3, 0, "Parse gagal", CDISP);
+            ScrBrush_Api();
+            Delay_Api(2000);
+            return;
+        }
+        data = cJSON_GetObjectItem(root, "data");
+    }
+
+    int perPage = 6;
+    int page = 0;
+    int total = cJSON_GetArraySize(data);
+    if (total == 0) {
+        ScrClsRam_Api();
+        ScrDisp_Api(LINE1, 0, "List Transaction", CDISP);
+        ScrDisp_Api(LINE3, 0, "Tidak ada transaksi", CDISP);
+        ScrBrush_Api();
+        if (root && root != data) cJSON_Delete(root);
+        Delay_Api(2000);
+        return;
+    }
+    int totalPages = (total + perPage - 1) / perPage;
+	KBFlush_Api();
+    while (1) {
+        renderTxnPage(data, page, perPage);
+        int key = WaitAnyKey_Api(60);
+        if (key == ESC || key == TIMEOUT) break;
+		if (key == TIMEOUT || key == 0) continue;
+        if (key == ENTER) { page = (page + 1) % totalPages; continue; }
+
+        int selectedIdx = -1;
+#ifdef DIGITAL1
+        if (key >= DIGITAL1 && key < DIGITAL1 + perPage) selectedIdx = (key - DIGITAL1);
+#endif
+        if (selectedIdx == -1 && key >= '1' && key <= '6') selectedIdx = (key - '1');
+        if (selectedIdx >= 0) {
+            int globalIdx = page * perPage + selectedIdx;
+            if (globalIdx < total) {
+                cJSON *item = cJSON_GetArrayItem(data, globalIdx);
+                if (item) {
+                    cJSON *tanggal = cJSON_GetObjectItem(item, "trans_date");
+                    cJSON *amount  = cJSON_GetObjectItem(item, "amount");
+                    cJSON *invoice = cJSON_GetObjectItem(item, "invoice_url");
+
+                    char amtClean[32] = "0";
+                    if (amount && amount->valuestring) {
+                        const char *src = amount->valuestring;
+                        int j = 0;
+                        for (int k = 0; src[k] != '\0' && j < (int)sizeof(amtClean)-1; ++k) {
+                            if (src[k] >= '0' && src[k] <= '9') amtClean[j++] = src[k];
+                            else if (src[k] == '.' || src[k] == ',') break;
+                        }
+                        if (j == 0) strcpy(amtClean, "0");
+                    }
+
+                    showInvoiceQR(
+                        (tanggal && tanggal->valuestring) ? tanggal->valuestring : "-",
+                        amtClean,
+                        (invoice && invoice->valuestring) ? invoice->valuestring : ""
+                    );
+                }
+            }
+        }
+    }
+
+    if (root && root != data) cJSON_Delete(root);
+    return;
 }
+
 
 char *preprocessJsonString(char *input)
 {
@@ -1757,121 +2051,257 @@ int httpSyncV2JSON(int *packLen, char *extracted, const char *url, const char *m
 	return 0;
 }
 
+// int httpRequestJSON(int *packLen,
+// 					char *extracted,
+// 					const char *url,
+// 					const char *method,
+// 					cJSON *body)
+// {
+// 	dev_disconnect();
+
+// 	memset(&tmsEntry, 0, sizeof(tmsEntry));
+// 	tmsEntry.protocol = PROTOCOL;
+// 	strcpy(tmsEntry.domain, DOMAIN);
+// 	strcpy(tmsEntry.port, PORT);
+
+// 	MAINLOG_L1("Protocol = %d", tmsEntry.protocol);
+// 	MAINLOG_L1("Domain = %s", tmsEntry.domain);
+// 	MAINLOG_L1("PORT = %s", tmsEntry.port);
+
+// 	int devConnectRet = dev_connect(&tmsEntry, 5);
+// 	MAINLOG_L1("TMS: nembak api dev_connect() hasil connect= %d", devConnectRet);
+// 	MAINLOG_L1("devConnectRet = %d", devConnectRet);
+// 	if (devConnectRet < 0)
+// 	{
+// 		dev_disconnect();
+// 		ScrCls_Api();
+// 		ScrDisp_Api(LINE1, 0, "Gagal konek Pastikan", CDISP);
+// 		ScrDisp_Api(LINE2, 0, "Device Terhubung", CDISP);
+// 		ScrDisp_Api(LINE3, 0, "Dengan Internet", CDISP);
+// 		WaitEnterAndEscKey_Api(5);
+// 		return -1;
+// 	}
+
+// 	// print body content
+// 	char *printed = cJSON_Print(body);
+// 	if (printed) {
+// 		MAINLOG_L1("JSON body = %s", printed);
+// 		free(printed);
+// 	}
+
+// 	// 1) Serialize the JSON body once
+// 	char *out = cJSON_PrintUnformatted(body);
+// 	if (!out)
+// 	{
+// 		MAINLOG_L1("Error: failed to serialize JSON body");
+// 		return -1;
+// 	}
+// 	int dataLen = strlen(out);
+
+// 	// 2) Prepare signature (unchanged from yours, but be SURE none of those routines overflow)
+// 	//    ... your timestamp, XOR, MD5 code here ...
+// 	//    Assume the result string (hex MD5) ends up in `char signature[33]` (32 hex + NUL).
+
+// 	// 3) Build the HTTP header + blank line in one snprintf()
+// 	//    Leave enough room for headers + body; SENDPACKLEN must be big enough!
+// 	unsigned char packData[RECEIVE_BUF_SIZE] = {0};
+// 	int headerLen = snprintf((char *)packData,
+// 							 sizeof(packData),
+// 							 "%s %s HTTP/1.1\r\n"
+// 							 "Host: %s\r\n"
+// 							 "User-Agent: Apache-HttpClient/4.3.5 (java 1.5)\r\n"
+// 							 "Connection: Keep-Alive\r\n"
+// 							 "Accept-Encoding: gzip,deflate\r\n"
+// 							 "Content-Type: application/json\r\n"
+// 							 "Content-Length: %d\r\n"
+// 							 "\r\n",
+// 							 method,
+// 							 url,
+// 							 DOMAIN,
+// 							 dataLen);
+
+// 	if (headerLen < 0 || headerLen + dataLen >= sizeof(packData))
+// 	{
+// 		MAINLOG_L1("Error: headers too large (%d + %d >= %zu)",
+// 				   headerLen, dataLen, sizeof(packData));
+// 		free(out);
+// 		return -1;
+// 	}
+
+// 	// 4) Append the body
+// 	memcpy(packData + headerLen, out, dataLen);
+// 	packData[headerLen + dataLen] = '\0'; // not strictly needed for send(), but useful for debug
+
+// 	free(out);
+
+// 	*packLen = headerLen + dataLen;
+// 	MAINLOG_L1("Sending request:\n%s", packData);
+
+// 	// 5) Send & receive
+// 	int ret = dev_send(packData, *packLen);
+// 	if (ret != 0)
+// 	{
+// 		MAINLOG_L1("dev_send failed: %d", ret);
+// 		return ret;
+// 	}
+
+// 	// memset(packData, 0, sizeof(char) * RECEIVE_BUF_SIZE);
+// 	int recvLen = dev_recv(packData, RECEIVE_BUF_SIZE, 10);
+// 	MAINLOG_L1("recvLen = %d", recvLen);
+// 	if (recvLen <= 0)
+// 	{
+// 		MAINLOG_L1("dev_recv failed: %d", recvLen);
+// 		return recvLen;
+// 	}
+// 	packData[recvLen] = '\0';
+// 	MAINLOG_L1("Response: %s", packData);
+
+// 	// 6) Extract JSON payload
+// 	char *json_start = strchr((char *)packData, '{'); 
+// 	if (!json_start)
+// 	{
+// 		MAINLOG_L1("Error: no JSON found in response");
+// 		return -1;
+// 	}
+// 	strcpy(extracted, json_start);
+// 	return 0;
+// }
+
+// ...existing code...
 int httpRequestJSON(int *packLen,
-					char *extracted,
-					const char *url,
-					const char *method,
-					cJSON *body)
+    char *extracted,
+    const char *url,
+    const char *method,
+    cJSON *body)
 {
-	dev_disconnect();
+    // Putuskan koneksi lama (jaga-jaga), lalu buka koneksi baru
+    dev_disconnect();
 
-	memset(&tmsEntry, 0, sizeof(tmsEntry));
-	tmsEntry.protocol = PROTOCOL;
-	strcpy(tmsEntry.domain, DOMAIN);
-	strcpy(tmsEntry.port, PORT);
+    memset(&tmsEntry, 0, sizeof(tmsEntry));
+    tmsEntry.protocol = PROTOCOL;
+    strcpy(tmsEntry.domain, DOMAIN);
+    strcpy(tmsEntry.port, PORT);
 
-	MAINLOG_L1("Protocol = %d", tmsEntry.protocol);
-	MAINLOG_L1("Domain = %s", tmsEntry.domain);
-	MAINLOG_L1("PORT = %s", tmsEntry.port);
+    int connRet = dev_connect(&tmsEntry, 5);
+    MAINLOG_L1("httpRequestJSON dev_connect ret=%d domain=%s port=%s", connRet, DOMAIN, PORT);
+    if (connRet < 0) {
+        MAINLOG_L1("httpRequestJSON: dev_connect gagal");
+        return -1;
+    }
 
-	int devConnectRet = dev_connect(&tmsEntry, 5);
-	MAINLOG_L1("TMS: nembak api dev_connect() hasil connect= %d", devConnectRet);
-	MAINLOG_L1("devConnectRet = %d", devConnectRet);
-	if (devConnectRet < 0)
-	{
-		dev_disconnect();
-		ScrCls_Api();
-		ScrDisp_Api(LINE1, 0, "Gagal konek Pastikan", CDISP);
-		ScrDisp_Api(LINE2, 0, "Device Terhubung", CDISP);
-		ScrDisp_Api(LINE3, 0, "Dengan Internet", CDISP);
-		WaitEnterAndEscKey_Api(5);
-		return -1;
-	}
+    char *out = NULL;
+    int dataLen = 0;
 
-	// print body content
-	char *printed = cJSON_Print(body);
-	if (printed) {
-		MAINLOG_L1("JSON body = %s", printed);
-		free(printed);
-	}
+    // Body hanya untuk selain GET
+    if (method && strcmp(method, "GET") != 0 && body) {
+        out = cJSON_PrintUnformatted(body);
+        if (!out) {
+            MAINLOG_L1("httpRequestJSON: gagal serialize JSON body");
+            dev_disconnect();
+            return -1;
+        }
+        dataLen = (int)strlen(out);
+    }
 
-	// 1) Serialize the JSON body once
-	char *out = cJSON_PrintUnformatted(body);
-	if (!out)
-	{
-		MAINLOG_L1("Error: failed to serialize JSON body");
-		return -1;
-	}
-	int dataLen = strlen(out);
+    unsigned char packData[RECEIVE_BUF_SIZE + 1];
+    memset(packData, 0, sizeof(packData));
 
-	// 2) Prepare signature (unchanged from yours, but be SURE none of those routines overflow)
-	//    ... your timestamp, XOR, MD5 code here ...
-	//    Assume the result string (hex MD5) ends up in `char signature[33]` (32 hex + NUL).
+    int headerLen = 0;
+    if (strcmp(method, "GET") == 0) {
+        headerLen = snprintf((char *)packData, sizeof(packData),
+                             "%s %s HTTP/1.1\r\n"
+                             "Host: %s\r\n"
+                             "User-Agent: Apache-HttpClient/4.3.5 (java 1.5)\r\n"
+                             "Connection: Keep-Alive\r\n"
+                             "\r\n",
+                             method, url, DOMAIN);
+    } else {
+        headerLen = snprintf((char *)packData, sizeof(packData),
+                             "%s %s HTTP/1.1\r\n"
+                             "Host: %s\r\n"
+                             "User-Agent: Apache-HttpClient/4.3.5 (java 1.5)\r\n"
+                             "Connection: Keep-Alive\r\n"
+                             "Accept-Encoding: gzip,deflate\r\n"
+                             "Content-Type: application/json\r\n"
+                             "Content-Length: %d\r\n"
+                             "\r\n",
+                             method ? method : "POST", url, DOMAIN, dataLen);
+    }
 
-	// 3) Build the HTTP header + blank line in one snprintf()
-	//    Leave enough room for headers + body; SENDPACKLEN must be big enough!
-	unsigned char packData[RECEIVE_BUF_SIZE] = {0};
-	int headerLen = snprintf((char *)packData,
-							 sizeof(packData),
-							 "%s %s HTTP/1.1\r\n"
-							 "Host: %s\r\n"
-							 "User-Agent: Apache-HttpClient/4.3.5 (java 1.5)\r\n"
-							 "Connection: Keep-Alive\r\n"
-							 "Accept-Encoding: gzip,deflate\r\n"
-							 "Content-Type: application/json\r\n"
-							 "Content-Length: %d\r\n"
-							 "\r\n",
-							 method,
-							 url,
-							 DOMAIN,
-							 dataLen);
+    if (headerLen < 0 || headerLen >= (int)sizeof(packData)) {
+        MAINLOG_L1("httpRequestJSON: header terlalu besar");
+        if (out) free(out);
+        dev_disconnect();
+        return -1;
+    }
 
-	if (headerLen < 0 || headerLen + dataLen >= sizeof(packData))
-	{
-		MAINLOG_L1("Error: headers too large (%d + %d >= %zu)",
-				   headerLen, dataLen, sizeof(packData));
-		free(out);
-		return -1;
-	}
+    if (out) {
+        if (headerLen + dataLen >= (int)sizeof(packData)) {
+            MAINLOG_L1("httpRequestJSON: body terlalu besar");
+            free(out);
+            dev_disconnect();
+            return -1;
+        }
+        memcpy(packData + headerLen, out, dataLen);
+    }
 
-	// 4) Append the body
-	memcpy(packData + headerLen, out, dataLen);
-	packData[headerLen + dataLen] = '\0'; // not strictly needed for send(), but useful for debug
+    if (out) free(out);
 
-	free(out);
+    *packLen = headerLen + dataLen;
+    MAINLOG_L1("httpRequestJSON: kirim %s %s, len=%d", method, url, *packLen);
 
-	*packLen = headerLen + dataLen;
-	MAINLOG_L1("Sending request:\n%s", packData);
+    int sret = dev_send(packData, *packLen);
+    if (sret != 0) {
+        MAINLOG_L1("httpRequestJSON: dev_send gagal: %d", sret);
+        dev_disconnect();
+        return sret;
+    }
 
-	// 5) Send & receive
-	int ret = dev_send(packData, *packLen);
-	if (ret != 0)
-	{
-		MAINLOG_L1("dev_send failed: %d", ret);
-		return ret;
-	}
+    int recvLen = dev_recv(packData, RECEIVE_BUF_SIZE, 10);
+    if (recvLen <= 0) {
+        MAINLOG_L1("httpRequestJSON: dev_recv gagal: %d", recvLen);
+        dev_disconnect();
+        return recvLen;
+    }
+    packData[recvLen] = '\0';
+    MAINLOG_L1("Response: %s", packData);
 
-	// memset(packData, 0, sizeof(char) * RECEIVE_BUF_SIZE);
-	int recvLen = dev_recv(packData, RECEIVE_BUF_SIZE, 10);
-	MAINLOG_L1("recvLen = %d", recvLen);
-	if (recvLen <= 0)
-	{
-		MAINLOG_L1("dev_recv failed: %d", recvLen);
-		return recvLen;
-	}
-	packData[recvLen] = '\0';
-	MAINLOG_L1("Response: %s", packData);
+    // Ekstrak JSON: cari paling awal '[' atau '{', dan potong di bracket penutup
+    char *obj_start = strchr((char *)packData, '{');
+    char *arr_start = strchr((char *)packData, '[');
+    char *json_start = NULL;
+    if (obj_start && arr_start) json_start = (arr_start < obj_start) ? arr_start : obj_start;
+    else json_start = obj_start ? obj_start : arr_start;
 
-	// 6) Extract JSON payload
-	char *json_start = strchr((char *)packData, '{'); 
-	if (!json_start)
-	{
-		MAINLOG_L1("Error: no JSON found in response");
-		return -1;
-	}
-	strcpy(extracted, json_start);
-	return 0;
+    if (!json_start) {
+        MAINLOG_L1("httpRequestJSON: JSON tidak ditemukan");
+        dev_disconnect();
+        return -1;
+    }
+
+    char closing = (*json_start == '[') ? ']' : '}';
+    char *json_end = strrchr(json_start, closing);
+    if (!json_end) {
+        MAINLOG_L1("httpRequestJSON: bracket penutup JSON tidak ditemukan");
+        dev_disconnect();
+        return -1;
+    }
+
+    size_t json_len = (size_t)(json_end - json_start + 1);
+    if (json_len >= (size_t)RECVPACKLEN) {
+        MAINLOG_L1("httpRequestJSON: JSON diekstrak terlalu besar len=%u", (unsigned)json_len);
+        dev_disconnect();
+        return -1;
+    }
+
+    memcpy(extracted, json_start, json_len);
+    extracted[json_len] = '\0';
+    MAINLOG_L1("httpRequestJSON: Extracted JSON len=%u", (unsigned)json_len);
+
+    dev_disconnect();
+    return 0;
 }
+// ...existing code...
 
 void formatRupiah(const char *number, char *output)
 {
@@ -1946,7 +2376,7 @@ PWD:
 	ScrCls_Api();
 	if (ret2 == 0)
 	{
-		char combinedText[50]; // Make sure the size is sufficient to hold the combined string
+		char combinedText[50]; 
 		ScrClsRam_Api();
 		sprintf(combinedText, "Serial Number : %s", TempBuf2);
 		ScrDisp_Api(LINE1, 0, "Serial Number", CDISP);
@@ -1967,63 +2397,48 @@ void readFilewifi()
 	portClose_lib(10);
 	portOpen_lib(10, NULL);
 	portFlushBuf_lib(10);
-	fileLen = GetFileSize_Api("/ext/myfile.txt");
+	fileLen = GetFileSize_Api("/ext/q161pro.txt");
 	MAINLOG_L1("readfile = %d", fileLen);
 	memset(TempBuf, 0, sizeof(TempBuf));
-	ret = ReadFile_Api("/ext/myfile.txt", TempBuf, loc, &fileLen);
+	ret = ReadFile_Api("/ext/q161pro.txt", TempBuf, loc, &fileLen);
 	MAINLOG_L1("readfile = %d", ret);
 	MAINLOG_L1("readfile = %s", TempBuf);
 }
 
 void SelectSettingsMenu(void)
 {
-    int nSelcItem = 1;
-    const char *pszTitle = "Menu";
-	const char *pszItems[] = {
-		"↑ Volume Up",   // Unicode up arrow; fallback: replace with '^' if device font unsupported
-		"↓ Volume Down", // Unicode down arrow; fallback: replace with 'v' if device font unsupported
+	int nSelcItem = 1;
+	const char *pszTitle = "Settings Volume";
+	const char *volumeMenuItems[] = {
+		"UP   Volume Up",
+		"DOWN Volume Down",
 	};
-    while (1)
-    {
-        nSelcItem = ShowMenuItem((char *)pszTitle, pszItems, 2, DIGITAL1, DIGITAL2, 0, 60);
-        MAINLOG_L1("ShowMenuItem = %d", nSelcItem);
-        switch (nSelcItem)	
-        {
-        case DIGITAL1:
-            if (G_sys_param.sound_level >= 5) {
-                PlayTipIfAudible("Max volume");
-            } else {
-                int before = G_sys_param.sound_level;
-                G_sys_param.sound_level++;
-                saveParam();
-                if (before == 0)
-                    PlayTipIfAudible("Unmute");
-                else
-                    PlayTipIfAudible("Volume up");
-            }
-            showVolumeBar();
-            break;
-        case DIGITAL2:
-            if (G_sys_param.sound_level <= 0) {
-                MAINLOG_L1("[VOL] Already muted");
-            } else {
-                G_sys_param.sound_level--;
-                saveParam();
-                if (G_sys_param.sound_level == 0) {
-                    MAINLOG_L1("[VOL] Mute activated");
-                    // suppress tip
-                } else {
-                    PlayTipIfAudible("Volume down");
-                }
-            }
-            showVolumeBar();
-            break;
-        case ESC:
-            return;
-        default:
-            break;
-        }
-    }
+
+	g_volumeHotkeysEnabled = 1;
+
+	while (1)
+	{
+		nSelcItem = ShowMenuItem(pszTitle, volumeMenuItems, 2, DIGITAL1, DIGITAL2, 0, 60);
+		MAINLOG_L1("ShowMenuItem = %d", nSelcItem);
+		switch (nSelcItem)
+		{
+		case DIGITAL1:
+			MAINLOG_L1("[VOL] Digit 1 pressed (info only, no action)");
+			continue;
+		case DIGITAL2:
+			MAINLOG_L1("[VOL] Digit 2 pressed (info only, no action)");
+			continue;
+		case ESC:
+		case TIMEOUT:
+			goto exit_settings_menu;
+		default:
+			break;
+		}
+	}
+
+exit_settings_menu:
+	g_volumeHotkeysEnabled = 0;
+	return;
 }
 void OutputAPDU(char *FileName)
 {
@@ -2525,18 +2940,18 @@ void CBCEn()
 
 void writeFile()
 {
-	DelFile_Api("/ext/myfile.txt");
+	DelFile_Api("/ext/q161pro.txt");
 	int ret = 0;
 	unsigned int size = 0;
 	unsigned char buffer[13] = "Hello World!";
-	size = GetFileSize_Api("/ext/myfile.txt");
+	size = GetFileSize_Api("/ext/q161pro.txt");
 	TipAndWaitEx_Api("size=%d", size);
 
-	ret = WriteFile_Api("/ext/myfile.txt", buffer, size, sizeof(buffer));
+	ret = WriteFile_Api("/ext/q161pro.txt", buffer, size, sizeof(buffer));
 	TipAndWaitEx_Api("ret=%d", ret);
 
 	size = 0;
-	size = GetFileSize_Api("/ext/myfile.txt");
+	size = GetFileSize_Api("/ext/q161pro.txt");
 	TipAndWaitEx_Api("size=%d", size);
 }
 

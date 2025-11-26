@@ -464,8 +464,6 @@ void splitStringPOS(unsigned char *extracted)
 				char successMsg[64];
 				char amountMsg[64];
 				char secDisplay[40];
-
-				MAINLOG_L1("url invoice setelah bayar = %s", urlInvoice);
 			    int ret = QREncodeString(urlInvoice, 3, 3, QRBMP, 3.4);
 					if (ret == 0) {
 						ScrCls_Api();  
@@ -496,18 +494,17 @@ void splitStringPOS(unsigned char *extracted)
 										buf[0] = '0' + i;
 										buf[1] = '\0';
 								}
-								ScrDisp_Api(LINE3, 0, "          ", CDISP);     
-								ScrDisp_Api(LINE3, 0, buf, CDISP); 
+								ScrDisp_Api(LINE3, 0, "          ", CDISP);        
+								ScrDisp_Api(LINE3, 0, buf, CDISP);                
 								int key = GetKey_Api();
 								if (key == ESC || key == ENTER) {
 									MAINLOG_L1("QR closed early by key: %d", key);
 									break;
-								}               
+								}
 								Delay_Api(1000);                                 
 						}
 						secscrCls_lib();
 						DispMainFace();
-						
 					} 
 					else {
 						MAINLOG_L1("RET BUKAN 0 FIX SOMETHING BAD HAPPENED");
@@ -911,7 +908,7 @@ int mqttMainThreadV2()
 	int ret, err;
 	MQTTClient client;
 	char string[200] = "";
-
+	int exitReason = 0;
 	MQTTPacket_connectData data = MQTTPacket_connectData_initializer;
 	char TempBuf2[1025];
 	int Len2 = 0, ret4 = 0, loc2 = 0;
@@ -935,7 +932,7 @@ int mqttMainThreadV2()
 		ScrDisp_Api(LINE1, 0, "Tidak Ada Serial Number Harap ", CDISP);
 		ScrDisp_Api(LINE2, 0, "Sync Terlebih Dahulu", CDISP);
 		WaitEnterAndEscKey_Api(12);
-		return;
+		return 0;
 	}
 
 	strcpy(G_sys_param.mqtt_topic, "aisino/dynamicQR/+/");
@@ -965,7 +962,7 @@ int mqttMainThreadV2()
 		ScrDisp_Api(LINE1, 0, "Tidak Ada Koneksi", CDISP);
 		ScrDisp_Api(LINE2, 0, "Internet", CDISP);
 		WaitEnterAndEscKey_Api(5);
-		return;
+		return 0;
 	}
 
 	data.willFlag = 0;
@@ -988,7 +985,7 @@ int mqttMainThreadV2()
 		ScrDisp_Api(LINE1, 0, "Gagal Konek Ke", CDISP);
 		ScrDisp_Api(LINE2, 0, "Server", CDISP);
 		WaitEnterAndEscKey_Api(12);
-		return;
+		return 0;
 	}
 
 	ret = MQTTSubscribe(&client, G_sys_param.mqtt_topic, G_sys_param.mqtt_qos, mqttTopicRouter);
@@ -1004,7 +1001,7 @@ int mqttMainThreadV2()
 		ScrDisp_Api(LINE1, 0, "Gagal Konek Ke", CDISP);
 		ScrDisp_Api(LINE2, 0, "Server", CDISP);
 		WaitEnterAndEscKey_Api(12);
-		return;
+		return 0;
 	}
 
 	MAINLOG_L1("MQTT Connected");
@@ -1041,6 +1038,7 @@ int mqttMainThreadV2()
 				
 				ScrCls_Api();
 				MAINLOG_L1("Call mqttclose");
+				exitReason = 1;
 				break;
 			}
 			ret = MQTTYield(&client, 1000); // set heartbeat time
@@ -1066,7 +1064,7 @@ int mqttMainThreadV2()
 	MQTTDisconnect(&client);
 	network.mqttclose(network.netContext);
 	MAINLOG_L1("Call mqttclose");
-	return 0;
+	return exitReason;
 }
 
 // extract third segment of given topic
