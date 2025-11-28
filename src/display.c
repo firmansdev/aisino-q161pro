@@ -1,3 +1,5 @@
+int http_connection_active = 0;
+
 /*
  * display.c
  *
@@ -605,137 +607,137 @@ void DynamicNfcMenu(void)
 }
 
 
-int hitCallbackApi(const char *partnerReferenceNo, const char *serialNumber, char *responseOut)
-{
-    static u8 packData[RECEIVE_BUF_SIZE] = {0};
-    int packLen = 0;
-    int ret = 0;
+// int hitCallbackApi(const char *partnerReferenceNo, const char *serialNumber, char *responseOut)
+// {
+//     static u8 packData[RECEIVE_BUF_SIZE] = {0};
+//     int packLen = 0;
+//     int ret = 0;
 
-    portClose_lib(10);
-    int portOpenRet = portOpen_lib(10, NULL);
-    Delay_Api(20);
-    MAINLOG_L1("portOpen_lib ret = %d", portOpenRet);
-    if (portOpenRet != 0) {
-        MAINLOG_L1("ERROR: gagal buka port");
-        return -1;
-    }
-    portFlushBuf_lib(10);
-    MAINLOG_L1("Port dibuka dan buffer di-flush");
+//     portClose_lib(10);
+//     int portOpenRet = portOpen_lib(10, NULL);
+//     Delay_Api(20);
+//     MAINLOG_L1("portOpen_lib ret = %d", portOpenRet);
+//     if (portOpenRet != 0) {
+//         MAINLOG_L1("ERROR: gagal buka port");
+//         return -1;
+//     }
+//     portFlushBuf_lib(10);
+//     MAINLOG_L1("Port dibuka dan buffer di-flush");
 
-    // ===== Connect ke server =====
-	memset(&tmsEntry, 0, sizeof(tmsEntry));
-	tmsEntry.protocol = PROTOCOL;
-	strcpy(tmsEntry.domain, DOMAIN);
-	strcpy(tmsEntry.port, PORT);
-	ret = dev_connect(&tmsEntry, 5);  // timeout 5 detik
+//     // ===== Connect ke server =====
+// 	memset(&tmsEntry, 0, sizeof(tmsEntry));
+// 	tmsEntry.protocol = PROTOCOL;
+// 	strcpy(tmsEntry.domain, DOMAIN);
+// 	strcpy(tmsEntry.port, PORT);
+// 	ret = dev_connect(&tmsEntry, 5);  // timeout 5 detik
 
-    if (ret != 0) {
-        MAINLOG_L1("ERROR: dev_connect gagal, ret = %d", ret);
-        dev_disconnect();
-        return -1;
-    }
-    MAINLOG_L1("dev_connect sukses");
+//     if (ret != 0) {
+//         MAINLOG_L1("ERROR: dev_connect gagal, ret = %d", ret);
+//         dev_disconnect();
+//         return -1;
+//     }
+//     MAINLOG_L1("dev_connect sukses");
 
-    // ===== Buat JSON request =====
-    cJSON *root = cJSON_CreateObject();
-    if (!root) {
-        MAINLOG_L1("ERROR: gagal create cJSON object");
-        dev_disconnect();
-        return -1;
-    }
+//     // ===== Buat JSON request =====
+//     cJSON *root = cJSON_CreateObject();
+//     if (!root) {
+//         MAINLOG_L1("ERROR: gagal create cJSON object");
+//         dev_disconnect();
+//         return -1;
+//     }
 
-    cJSON_AddStringToObject(root, "partnerReferenceNo", partnerReferenceNo);
-    cJSON_AddStringToObject(root, "serialNumber", serialNumber);
+//     cJSON_AddStringToObject(root, "partnerReferenceNo", partnerReferenceNo);
+//     cJSON_AddStringToObject(root, "serialNumber", serialNumber);
 
-    char *bodyStr = cJSON_PrintUnformatted(root);
-    if (!bodyStr) {
-        MAINLOG_L1("ERROR: gagal print JSON");
-        cJSON_Delete(root);
-        dev_disconnect();
-        return -1;
-    }
+//     char *bodyStr = cJSON_PrintUnformatted(root);
+//     if (!bodyStr) {
+//         MAINLOG_L1("ERROR: gagal print JSON");
+//         cJSON_Delete(root);
+//         dev_disconnect();
+//         return -1;
+//     }
 
-    int dataLen = strlen(bodyStr);
-    MAINLOG_L1("JSON Body = %s", bodyStr);
-    MAINLOG_L1("Data length = %d", dataLen);
+//     int dataLen = strlen(bodyStr);
+//     MAINLOG_L1("JSON Body = %s", bodyStr);
+//     MAINLOG_L1("Data length = %d", dataLen);
 
-    // ===== Build HTTP Request =====
-    char urlPath[128];
-    sprintf(urlPath, "POST /transactions-services/nobu-mpm/query-qris");
+//     // ===== Build HTTP Request =====
+//     char urlPath[128];
+//     sprintf(urlPath, "POST /transactions-services/nobu-mpm/query-qris");
 
-    memset(packData, 0, sizeof(packData));
-    sprintf((char *)packData, "%s HTTP/1.1\r\n", urlPath);
-    sprintf((char *)(packData + strlen((char *)packData)), "Host: %s\r\n", DOMAIN);
-    strcat((char *)packData, "Connection: Keep-Alive\r\n");
-    strcat((char *)packData, "Content-Type: application/json\r\n");
-    sprintf((char *)(packData + strlen((char *)packData)), "Content-Length: %d\r\n", dataLen);
-    strcat((char *)packData, "User-Agent: Apache-HttpClient/4.3.5 (java 1.5)\r\n");
-    strcat((char *)packData, "Accept-Encoding: gzip,deflate\r\n\r\n");
-    memcpy(packData + strlen((char *)packData), bodyStr, dataLen);
+//     memset(packData, 0, sizeof(packData));
+//     sprintf((char *)packData, "%s HTTP/1.1\r\n", urlPath);
+//     sprintf((char *)(packData + strlen((char *)packData)), "Host: %s\r\n", DOMAIN);
+//     strcat((char *)packData, "Connection: Keep-Alive\r\n");
+//     strcat((char *)packData, "Content-Type: application/json\r\n");
+//     sprintf((char *)(packData + strlen((char *)packData)), "Content-Length: %d\r\n", dataLen);
+//     strcat((char *)packData, "User-Agent: Apache-HttpClient/4.3.5 (java 1.5)\r\n");
+//     strcat((char *)packData, "Accept-Encoding: gzip,deflate\r\n\r\n");
+//     memcpy(packData + strlen((char *)packData), bodyStr, dataLen);
 
-    int headerLen = strlen((char *)packData);
-    packLen = headerLen + dataLen;
+//     int headerLen = strlen((char *)packData);
+//     packLen = headerLen + dataLen;
 
-    free(bodyStr);
-    cJSON_Delete(root);
+//     free(bodyStr);
+//     cJSON_Delete(root);
 
-    MAINLOG_L1("HTTP Request built, total length = %d", packLen);
-    MAINLOG_L1("Contents of packData before dev_send:\n%s", packData);
-    MAINLOG_L1("packLen being sent = %d", packLen);
+//     MAINLOG_L1("HTTP Request built, total length = %d", packLen);
+//     MAINLOG_L1("Contents of packData before dev_send:\n%s", packData);
+//     MAINLOG_L1("packLen being sent = %d", packLen);
 
-    // ===== Kirim request =====
-    ret = dev_send(packData, packLen);
-    MAINLOG_L1("dev_send returned = %d", ret);
-    if (ret != 0) {
-        MAINLOG_L1("ERROR: dev_send failed, ret = %d", ret);
-        dev_disconnect();
-        return ret;
-    }
+//     // ===== Kirim request =====
+//     ret = dev_send(packData, packLen);
+//     MAINLOG_L1("dev_send returned = %d", ret);
+//     if (ret != 0) {
+//         MAINLOG_L1("ERROR: dev_send failed, ret = %d", ret);
+//         dev_disconnect();
+//         return ret;
+//     }
 
-    // ===== Terima response =====
-    int recvLen = dev_recv(packData, RECEIVE_BUF_SIZE, 10);
-    if (recvLen <= 0) {
-        MAINLOG_L1("ERROR: dev_recv gagal, recvLen = %d", recvLen);
-        dev_disconnect();
-        return -1;
-    }
+//     // ===== Terima response =====
+//     int recvLen = dev_recv(packData, RECEIVE_BUF_SIZE, 10);
+//     if (recvLen <= 0) {
+//         MAINLOG_L1("ERROR: dev_recv gagal, recvLen = %d", recvLen);
+//         dev_disconnect();
+//         return -1;
+//     }
 
-    packData[recvLen] = '\0';
-    MAINLOG_L1("Full HTTP Response:\n%s", packData);
+//     packData[recvLen] = '\0';
+//     MAINLOG_L1("Full HTTP Response:\n%s", packData);
 
-    // ===== Copy JSON response =====
-    char *json_start = strchr((char *)packData, '{');
-    if (!json_start) {
-        MAINLOG_L1("ERROR: JSON response tidak ditemukan");
-        dev_disconnect();
-        return -1;
-    }
+//     // ===== Copy JSON response =====
+//     char *json_start = strchr((char *)packData, '{');
+//     if (!json_start) {
+//         MAINLOG_L1("ERROR: JSON response tidak ditemukan");
+//         dev_disconnect();
+//         return -1;
+//     }
 
-    strcpy(responseOut, json_start);
-    MAINLOG_L1("responseOut = %s", responseOut);
+//     strcpy(responseOut, json_start);
+//     MAINLOG_L1("responseOut = %s", responseOut);
 
-	// ===== Parse JSON untuk cek status =====
-    cJSON *jsonResp = cJSON_Parse(json_start);
-    if (!jsonResp) {
-        MAINLOG_L1("ERROR: gagal parse JSON response");
-        dev_disconnect();
-        return -1;
-    }
+// 	// ===== Parse JSON untuk cek status =====
+//     cJSON *jsonResp = cJSON_Parse(json_start);
+//     if (!jsonResp) {
+//         MAINLOG_L1("ERROR: gagal parse JSON response");
+//         dev_disconnect();
+//         return -1;
+//     }
 
-    cJSON *status = cJSON_GetObjectItem(jsonResp, "status");
-    if (!status || strcmp(status->valuestring, "success") != 0) {
-        // Jika status bukan "success", kembalikan error
-        cJSON_Delete(jsonResp);
-        dev_disconnect();
-        return -1;
-    }
+//     cJSON *status = cJSON_GetObjectItem(jsonResp, "status");
+//     if (!status || strcmp(status->valuestring, "success") != 0) {
+//         // Jika status bukan "success", kembalikan error
+//         cJSON_Delete(jsonResp);
+//         dev_disconnect();
+//         return -1;
+//     }
 
-    cJSON_Delete(jsonResp);
+//     cJSON_Delete(jsonResp);
 
-    // ===== Tutup koneksi =====
-    dev_disconnect();
-    return 0;
-}
+//     // ===== Tutup koneksi =====
+//     dev_disconnect();
+//     return 0;
+// }
 
 
 void DispMainFace(void)
@@ -1108,13 +1110,13 @@ void MenuThread()
     while (1)
     {
         DispMainFace();
-        // mqttMainThreadV2();     
-        // SelectMainMenu();
-		int reason = mqttMainThreadV2(); 
-		MAINLOG_L1("[MenuThread] mqttMainThreadV2 reason=%d", reason);
-        if (reason == 1) {
-            SelectMainMenu();
-        }
+        mqttMainThreadV2();     
+        SelectMainMenu();
+		// int reason = mqttMainThreadV2(); 
+		// MAINLOG_L1("[MenuThread] mqttMainThreadV2 reason=%d", reason);
+        // if (reason == 1) {
+        //     SelectMainMenu();
+        // }
     }
 }
 
@@ -1532,7 +1534,9 @@ void listTransaction()
     cJSON *dummyObj = cJSON_CreateObject(); 
     char apiResp[RECVPACKLEN] = {0};
     int packLen = 0;
-    int httpRet = httpRequestJSON(&packLen, apiResp, url, "GET", dummyObj);
+	http_connection_active = 1;
+	int httpRet = httpRequestJSON(&packLen, apiResp, url, "GET", dummyObj);
+	http_connection_active = 0;
     cJSON_Delete(dummyObj);
 
     MAINLOG_L1("listTransaction GET httpRet=%d resp=%s", httpRet, apiResp);
@@ -2175,7 +2179,7 @@ int httpRequestJSON(int *packLen,
     cJSON *body)
 {
     // Putuskan koneksi lama (jaga-jaga), lalu buka koneksi baru
-    dev_disconnect();
+    // dev_disconnect();
 
     memset(&tmsEntry, 0, sizeof(tmsEntry));
     tmsEntry.protocol = PROTOCOL;
@@ -2298,7 +2302,7 @@ int httpRequestJSON(int *packLen,
     extracted[json_len] = '\0';
     MAINLOG_L1("httpRequestJSON: Extracted JSON len=%u", (unsigned)json_len);
 
-    dev_disconnect();
+    // dev_disconnect();
     return 0;
 }
 // ...existing code...

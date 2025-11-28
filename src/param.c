@@ -87,7 +87,7 @@ void initParam(void){
 	G_sys_param.mqtt_ssl = 2;
 
 //	strcpy(G_sys_param.mqtt_topic, "home/firman/firman");
-	strcpy(G_sys_param.mqtt_client_id, "basicPubSub");
+	snprintf(G_sys_param.mqtt_client_id, sizeof(G_sys_param.mqtt_client_id), "aisino-%s", G_sys_param.sn); // unique client id per device
 //	strcpy(G_sys_param.publish_topic, "topic_1");
 
 //	sprintf(G_sys_param.mqtt_topic, "topic/soundbox-%s", G_sys_param.sn) ;

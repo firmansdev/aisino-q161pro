@@ -7,6 +7,7 @@
 
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
 
 #include <MQTTFreeRTOS.h>
 
@@ -35,6 +36,8 @@ Network g_network;
 // extern MQTTClient g_mqttClient;  // MQTT global
 // extern Network g_network;
 volatile int mqtt_connection_active = 0;
+
+extern int http_connection_active;
 
 void safe_mqtt_cleanup(MQTTClient *client, Network *net) {
     if (client) MQTTDisconnect(client);
@@ -157,29 +160,13 @@ void splitStringOK(unsigned char *extracted, int *condition)
             WaitEnterAndEscKey_Api(3);
         }
 
-        if (condition == 0) {
-            int err;
-            Network n;
-            MQTTClient c;
-            MQTTPacket_connectData data = MQTTPacket_connectData_initializer;
-
-            MAINLOG_L1("MQTT Connecting to server");
-            memset(&c, 0, sizeof(MQTTClient));
-            c.defaultMessageHandler = onDefaultMessageArrived;
-            n.mqttconnect = net_connect;
-            n.mqttclose = net_close;
-            n.mqttread = net_read;
-            n.mqttwrite = net_write;
-            n.netContext = n.mqttconnect(NULL, G_sys_param.mqtt_server, G_sys_param.mqtt_port, 90000, 0, &err);
-
-            MQTTDisconnect(&c);
-            n.mqttclose(n.netContext);
-            G_sys_param.con = 1;
-            ScrBrush_Api();
-            return;
-        } else {
-            QRpos("POS2");
-        }
+		if (condition == 0) {
+			G_sys_param.con = 1; // request graceful shutdown handled by main loop
+			ScrBrush_Api();
+			return;
+		} else {
+			QRpos("POS2");
+		}
     } else {
         ScrBrush_Api();
         ScrCls_Api();
@@ -478,7 +465,8 @@ void splitStringPOS(unsigned char *extracted)
    						 secscrPrint_lib(0, 0, 0, secDisplay);
 
 						ScrDisp_Api(LINE4, 0, "E-Receipt", CDISP);        // show title
-						ScrDispImage_Api(QRBMP, 80, 95);         
+						ScrDispImage_Api(QRBMP, 80, 95); 
+						KBFlush_Api();        
 						for (int i = 30; i > 0; i--) {
 								char buf[4];  // to hold "30" + '\0'
 								if (i >= 100) {
@@ -496,12 +484,13 @@ void splitStringPOS(unsigned char *extracted)
 								}
 								ScrDisp_Api(LINE3, 0, "          ", CDISP);        
 								ScrDisp_Api(LINE3, 0, buf, CDISP);                
-								int key = GetKey_Api();
+								// int key = GetKey_Api();
+								int key = WaitAnyKey_Api(1); 
 								if (key == ESC || key == ENTER) {
 									MAINLOG_L1("QR closed early by key: %d", key);
 									break;
 								}
-								Delay_Api(1000);                                 
+								// Delay_Api(1000);                                 
 						}
 						secscrCls_lib();
 						DispMainFace();
@@ -644,11 +633,11 @@ int mQTTMainThread(char *param, int *singleRun)
 	MAINLOG_L1("merchant_id_nobu: %s", merchant_id_nobu);
 	MAINLOG_L1("external_store_id: %s", external_store_id);
 
-	// if (mqtt_connection_active) {
-	// 		MAINLOG_L1("MQTT connection already active, mQTTMainThread exited early");
-	// 		return -1;
-	// }
-	// mqtt_connection_active = 1;
+	if (mqtt_connection_active) {
+		MAINLOG_L1("[MQTT] Session already active, skip mQTTMainThread");
+		return 0;
+	}
+	mqtt_connection_active = 1;
 
 	memset(TempBuf2, 0, sizeof(TempBuf2));
 	portClose_lib(10);
@@ -663,6 +652,7 @@ int mQTTMainThread(char *param, int *singleRun)
 	MAINLOG_L1("MQTT Param function mQTTMainThread = %s", param);
 	if (ret4 == 3)
 	{
+		mqtt_connection_active = 0;
 		dev_disconnect();
 		ScrCls_Api();
 		ScrDisp_Api(LINE1, 0, "Tidak Ada Serial Number Harap ", CDISP);
@@ -746,6 +736,8 @@ int mQTTMainThread(char *param, int *singleRun)
 		MAINLOG_L1("MQTT n.netContext == NUL, err = %d", err);
 		MQTTDisconnect(&c);
 		n.mqttclose(n.netContext);
+		mqtt_connection_active = 0;
+		dev_disconnect();
 		dev_disconnect();
 		ScrCls_Api();
 		ScrDisp_Api(LINE1, 0, "Tidak Ada Koneksi", CDISP);
@@ -774,6 +766,7 @@ int mQTTMainThread(char *param, int *singleRun)
 	{
 		MQTTDisconnect(&c);
 		n.mqttclose(n.netContext);
+		mqtt_connection_active = 0;
 		dev_disconnect();
 		ScrCls_Api();
 		ScrDisp_Api(LINE1, 0, "Gagal Konek Ke", CDISP);
@@ -812,6 +805,7 @@ int mQTTMainThread(char *param, int *singleRun)
 	{
 		MQTTDisconnect(&c);
 		n.mqttclose(n.netContext);
+		mqtt_connection_active = 0;
 		dev_disconnect();
 		ScrCls_Api();
 		ScrDisp_Api(LINE1, 0, "Gagal Konek Ke", CDISP);
@@ -821,10 +815,14 @@ int mQTTMainThread(char *param, int *singleRun)
 	}
 
 	if( singleRun == 1 ){
-		int	ret = MQTTYield(&c, 1000);
-		MAINLOG_L1("MQTTYield: %d", ret);
+		int retYield = MQTTYield(&c, 1000);
+		MAINLOG_L1("MQTTYield(singleRun): %d", retYield);
+		MQTTDisconnect(&c);
+		n.mqttclose(n.netContext);
+		mqtt_connection_active = 0;
 		return;
 	}
+
 
 	MAINLOG_L1("MQTT Connected");
 	int limit = 90;
@@ -843,6 +841,7 @@ int mQTTMainThread(char *param, int *singleRun)
 			if (limit == 0)
 			{
 				MAINLOG_L1("MQTTYield: %d", ret);
+				mqtt_connection_active = 0;
 				dev_disconnect();
 				ScrCls_Api();
 				ScrDisp_Api(LINE1, 0, "Timeout", CDISP);
@@ -864,7 +863,7 @@ int mQTTMainThread(char *param, int *singleRun)
 				ScrCls_Api();
 				MQTTDisconnect(&c);
 				n.mqttclose(n.netContext);
-				// safe_mqtt_cleanup(&c, &n);
+				mqtt_connection_active = 0;
 				return;
 				break;
 			}
@@ -873,6 +872,7 @@ int mQTTMainThread(char *param, int *singleRun)
 			{
 				MAINLOG_L1("Checkpoint 3");
 				MAINLOG_L1("MQTTYield: %d", ret);
+				mqtt_connection_active = 0;
 				dev_disconnect();
 				ScrCls_Api();
 				ScrDisp_Api(LINE1, 0, "Koneksi Terputus", CDISP);
@@ -888,6 +888,7 @@ int mQTTMainThread(char *param, int *singleRun)
 			ScrCls_Api();
 			MQTTDisconnect(&c);
 			n.mqttclose(n.netContext);
+			mqtt_connection_active = 0;
 			return;
 			break;
 		}
@@ -895,6 +896,7 @@ int mQTTMainThread(char *param, int *singleRun)
 
 	MQTTDisconnect(&c);
 	n.mqttclose(n.netContext);
+	mqtt_connection_active = 0;
 	return 0;
 	
 }
@@ -908,7 +910,7 @@ int mqttMainThreadV2()
 	int ret, err;
 	MQTTClient client;
 	char string[200] = "";
-	int exitReason = 0;
+	// int exitReason = 0;
 	MQTTPacket_connectData data = MQTTPacket_connectData_initializer;
 	char TempBuf2[1025];
 	int Len2 = 0, ret4 = 0, loc2 = 0;
@@ -927,6 +929,7 @@ int mqttMainThreadV2()
 	MAINLOG_L1("readfile = %s", TempBuf2);
 	if (ret4 == 3)
 	{
+		mqtt_connection_active = 0;
 		dev_disconnect();
 		ScrCls_Api();
 		ScrDisp_Api(LINE1, 0, "Tidak Ada Serial Number Harap ", CDISP);
@@ -957,6 +960,7 @@ int mqttMainThreadV2()
 		MAINLOG_L1("MQTT network.netContext == NUL, err = %d", err);
 		MQTTDisconnect(&client);
 		network.mqttclose(network.netContext);
+		mqtt_connection_active = 0;
 		dev_disconnect();
 		ScrCls_Api();
 		ScrDisp_Api(LINE1, 0, "Tidak Ada Koneksi", CDISP);
@@ -980,6 +984,7 @@ int mqttMainThreadV2()
 	{
 		MQTTDisconnect(&client);
 		network.mqttclose(network.netContext);
+		mqtt_connection_active = 0;
 		dev_disconnect();
 		ScrCls_Api();
 		ScrDisp_Api(LINE1, 0, "Gagal Konek Ke", CDISP);
@@ -996,6 +1001,7 @@ int mqttMainThreadV2()
 	{
 		MQTTDisconnect(&client);
 		network.mqttclose(network.netContext);
+		mqtt_connection_active = 0;
 		dev_disconnect();
 		ScrCls_Api();
 		ScrDisp_Api(LINE1, 0, "Gagal Konek Ke", CDISP);
@@ -1038,7 +1044,7 @@ int mqttMainThreadV2()
 				
 				ScrCls_Api();
 				MAINLOG_L1("Call mqttclose");
-				exitReason = 1;
+				// exitReason = 1;
 				break;
 			}
 			ret = MQTTYield(&client, 1000); // set heartbeat time
@@ -1060,11 +1066,12 @@ int mqttMainThreadV2()
 		}
 	}
 	
+	mqtt_connection_active = 0;
 	dev_disconnect();
 	MQTTDisconnect(&client);
 	network.mqttclose(network.netContext);
 	MAINLOG_L1("Call mqttclose");
-	return exitReason;
+	return 0;
 }
 
 // extract third segment of given topic
@@ -1153,44 +1160,124 @@ int extract_third_segment_len(const char *topic, int topic_len, char *third_segm
     return 0;
 }
 
-void onTopicMessageArrivedNFC(MessageData *md) {
-	network.mqttclose(network.netContext);
+static void trim_topic_segment(char *segment)
+{
+	if (!segment)
+	{
+		return;
+	}
 
+	size_t len = strlen(segment);
+	while (len > 0)
+	{
+		unsigned char ch = (unsigned char)segment[len - 1];
+		if (ch <= ' ')
+		{
+			segment[--len] = '\0';
+		}
+		else
+		{
+			break;
+		}
+	}
+
+	size_t start = 0;
+	while (segment[start] != '\0')
+	{
+		unsigned char ch = (unsigned char)segment[start];
+		if (ch > ' ')
+		{
+			break;
+		}
+		start++;
+	}
+
+	if (start > 0)
+	{
+		memmove(segment, segment + start, len - start + 1);
+	}
+}
+
+void onTopicMessageArrivedNFC(MessageData *md) {
+	// network.mqttclose(network.netContext);
+	// Jangan tutup socket di dalam callback agar MQTT tetap bisa listen
 	MAINLOG_L1("MQTT NFC Arrived");
 	unsigned char buf[512];
 	MQTTMessage *m = md->message;
 
-	memcpy(buf, m->payload, m->payloadlen);
-	buf[m->payloadlen] = 0;
+	size_t copy_len = m->payloadlen;
+	if (copy_len >= sizeof(buf)) {
+		copy_len = sizeof(buf) - 1;
+	}
+	memcpy(buf, m->payload, copy_len);
+	buf[copy_len] = 0;
+	MAINLOG_L1("NFC payload len: %d", m->payloadlen);
+	MAINLOG_L1("NFC payload raw: %s", buf);
 
-	cJSON *mqttBody = cJSON_Parse(buf);
-	if (json == NULL) {
+	cJSON *mqttBody = cJSON_Parse((char *)buf);
+	if (mqttBody == NULL) {
 		MAINLOG_L1("MQTT parse json failed");
 		return;
 	}
 
 	cJSON *amount = cJSON_GetObjectItem(mqttBody, "amount");
-	if (cJSON_IsNumber(amount) || (amount->valueint64 == NULL)) {	
-		MAINLOG_L1("MQTT parse amount failed");
+	int amountValue = 0;
+	if (!amount) {
+		MAINLOG_L1("MQTT parse amount failed: missing field");
+		cJSON_Delete(mqttBody);
 		return;
 	}
-	MAINLOG_L1("amount = %d", amount->valueint64);
+	if (cJSON_IsNumber(amount)) {
+		long long rawAmount = amount->valueint64; // prefer extended integer if available
+		if (rawAmount == 0) {
+			/* fallback in case library doesn't populate valueint64 properly */
+			rawAmount = (long long)amount->valuedouble;
+		}
+		amountValue = (int)rawAmount;
+	} else if (cJSON_IsString(amount) && amount->valuestring != NULL) {
+		amountValue = atoi(amount->valuestring); // fallback if server sends string
+	} else {
+		/* As a last resort, print the node unformatted and parse digits */
+		char *amtRaw = cJSON_PrintUnformatted(amount);
+		if (amtRaw) {
+			char *p = amtRaw;
+			size_t len = strlen(p);
+			if (len >= 2 && p[0] == '"' && p[len-1] == '"') {
+				p[len-1] = '\0';
+				p++;
+			}
+			long long parsed = strtoll(p, NULL, 10);
+			amountValue = (int)parsed;
+			MAINLOG_L1("amount parsed via fallback: %d (raw: %s)", amountValue, p);
+			free(amtRaw);
+		} else {
+			MAINLOG_L1("MQTT parse amount failed: unsupported type");
+			cJSON_Delete(mqttBody);
+			return;
+		}
+	}
+	MAINLOG_L1("amount = %d", amountValue);
 
 	cJSON *partnerReferenceNo = cJSON_GetObjectItem(mqttBody, "partnerReferenceNo");
-	if ((partnerReferenceNo->valuestring == NULL)) {
+	if (!partnerReferenceNo || !cJSON_IsString(partnerReferenceNo) || partnerReferenceNo->valuestring == NULL) {
 		MAINLOG_L1("MQTT parse partnerReferenceNo failed");
+		cJSON_Delete(mqttBody);
 		return;
 	}
-
 	MAINLOG_L1("partnerReferenceNo = %s", partnerReferenceNo->valuestring);
+
 	cJSON *invoiceUrl = cJSON_GetObjectItem(mqttBody, "invoiceUrl");
-	if ((invoiceUrl->valuestring == NULL)) {
+	if (!invoiceUrl || !cJSON_IsString(invoiceUrl) || invoiceUrl->valuestring == NULL) {
 		MAINLOG_L1("MQTT parse invoiceUrl failed");
+		cJSON_Delete(mqttBody);
 		return;
 	}
 	MAINLOG_L1("invoiceUrl = %s", invoiceUrl->valuestring);
 
-	CardNFC(partnerReferenceNo->valuestring, amount->valueint64, invoiceUrl->valuestring);
+	// Teruskan ke proses NFC tanpa memutus koneksi MQTT
+	CardNFC(partnerReferenceNo->valuestring, amountValue, invoiceUrl->valuestring);
+
+	cJSON_Delete(mqttBody);
 }
 
 // int mqttTopicRouter(MessageData *md) {
