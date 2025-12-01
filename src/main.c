@@ -17,7 +17,7 @@
 const APP_MSG App_Msg = {
 		"Demo",
 		"Demo-App",
-		"V.2.6.1",
+		"V.2.7.0",
 		"VANSTONE",
 		__DATE__ " " __TIME__,
 		"",

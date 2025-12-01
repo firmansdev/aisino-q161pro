@@ -1,7 +1,7 @@
 /*
  * network.c
  *
- *  Created on: 2021��10��14��
+ *  Created on: 2021  10  14  
  *      Author: vanstone
  */
 #include <stdio.h>
@@ -40,6 +40,29 @@ int wirelessSslSend_lib(int sockid, unsigned char *pucdata, unsigned int iLen);
 int wirelessSslRecv_lib(int sockid, unsigned char *pucdata, unsigned int iLen, unsigned int uiTimeOut);
 int wirelessSetDNS_lib(unsigned char *pucDNS1, unsigned char *pucDNS2 );
 
+struct WIFI_SCAN_AP;
+
+#ifdef __WIFI__
+int wifiSocketCreate_lib(int nProtocol);
+int wifiSocketClose_lib(int sockid);
+int wifiTCPClose_lib(int sockid);
+int wifiTCPConnect_lib(int sockid, const char *pucIP, const char *pucPort, int timeout);
+int wifiSend_lib(int sockid, unsigned char *pucdata, unsigned int iLen, int timeout);
+int wifiRecv_lib(int sockid, unsigned char *pucdata, unsigned int iLen, int timeout);
+int wifiOpen_lib(void);
+int wifiAPDisconnect_lib(void);
+int wifiAPConnect_lib(unsigned char *ssid, unsigned char *pwd);
+int wifiSSLSocketCreate_lib(void);
+int wifiSSLSocketClose_lib(int sockid);
+int wifiSSLClose_lib(int sockid);
+int wifiSSLConnect_lib(int sockid, char *pucDestIP, const char *pucPort, int timeout);
+int wifiSSLSend_lib(int sockid, unsigned char *pucdata, unsigned int iLen, int timeout);
+int wifiSSLRecv_lib(int sockid, unsigned char *pucdata, unsigned int iLen, int timeout);
+int WifiespSetSSLConfig_lib(int sockid, int mode);
+int WifiespDownloadCrt_lib(int type, unsigned char *pucData, int iLen);
+int CommWifiScanAp_Api(struct WIFI_SCAN_AP *apArray, int maxCount, int rescan);
+#endif
+
 typedef struct {
 	int valid;
 	int socket;
@@ -53,8 +76,10 @@ struct WiFiNetwork {
 // FIXME: What if the caller doesn't close the socket?? (already fixed by chatgpt, chatgpt > average chinese developer)
 #define	MAX_SOCKETS		1
 #define CERTI_LEN  4096
+#define WIFI_SECURITY_OPEN 0
 
 static NET_SOCKET_PRI sockets[MAX_SOCKETS];
+static int inputPassw(const char *ssid, int security);
 
 EXTERN _IS_GPRS_ENABLED_;
 
@@ -566,7 +591,7 @@ int WifiConnect()
 	MAINLOG_L1("NetModuleOper_Api wifi:%d",ret);
 	ret = wifiOpen_lib();
 	MAINLOG_L1("wifiOpen_lib:%d", ret);
-	wifiAPDisconnect_lib();
+	// Keep existing connection when opening WiFi settings
 
 
 
@@ -591,34 +616,34 @@ int WifiConnect()
 					switch(nSelcItem)
 							{
 							case DIGITAL0:
-								inputPassw(ret,apArray[0].SSID);
+								inputPassw(apArray[0].SSID, apArray[0].Security);
 								break;
 							case DIGITAL1:
-								inputPassw(ret,apArray[1].SSID);
+								inputPassw(apArray[1].SSID, apArray[1].Security);
 								break;
 							case DIGITAL2:
-								inputPassw(ret,apArray[2].SSID);
+								inputPassw(apArray[2].SSID, apArray[2].Security);
 								break;
 							case DIGITAL3:
-								inputPassw(ret,apArray[3].SSID);
+								inputPassw(apArray[3].SSID, apArray[3].Security);
 								break;
 							case DIGITAL4:
-								inputPassw(ret,apArray[4].SSID);
+								inputPassw(apArray[4].SSID, apArray[4].Security);
 								break;
 							case DIGITAL5:
-								inputPassw(ret,apArray[5].SSID);
+								inputPassw(apArray[5].SSID, apArray[5].Security);
 								break;
 							case DIGITAL6:
-								inputPassw(ret,apArray[6].SSID);
+								inputPassw(apArray[6].SSID, apArray[6].Security);
 								break;
 							case DIGITAL7:
-								inputPassw(ret,apArray[7].SSID);
+								inputPassw(apArray[7].SSID, apArray[7].Security);
 								break;
 							case DIGITAL8:
-								inputPassw(ret,apArray[8].SSID);
+								inputPassw(apArray[8].SSID, apArray[8].Security);
 								break;
 							case DIGITAL9:
-								inputPassw(ret,apArray[9].SSID);
+								inputPassw(apArray[9].SSID, apArray[9].Security);
 								break;
 							case ESC:
 								return;
@@ -631,29 +656,61 @@ int WifiConnect()
 #endif
 }
 
-int inputPassw(ret,apArray){
+static int inputPassw(const char *ssid, int security)
+{
 	unsigned char outBuf[17];
-	PWD: ScrCls_Api();
-	ScrDisp_Api(1, 0, "PLS input password", LDISP);
-	memset(outBuf, 0, sizeof(outBuf));
-	ret = GetScanfEx_Api(MMI_NUMBER|MMI_LETTER, 8, 16, outBuf, 10000, 5, 5, 20, MMI_LETTER);
-	if(ret == 0x0D){
-		memcpy(wifiId, apArray, strlen(apArray));
-		memcpy(wifiPwd, outBuf + 1, outBuf[0]);
+	int ret;
+	int minPwdLen = (security == WIFI_SECURITY_OPEN) ? 0 : 8;
+	const int ENTER_KEY = 0x0D; // assume Enter
+	const int ESC_KEY = 0x1B;   // assume Esc
+
+	for(;;) {
+		ScrCls_Api();
+		ScrDisp_Api(1, 0, "PLS input password", LDISP);
+		memset(outBuf, 0, sizeof(outBuf));
+		ret = GetScanfEx_Api(MMI_NUMBER | MMI_LETTER, minPwdLen, 16, outBuf, 10000, 5, 5, 20, MMI_LETTER);
+		if (ret == ESC_KEY) {
+			MAINLOG_L1("password entry cancelled");
+			return -1; // user cancelled
+		}
+		if (ret != ENTER_KEY) {
+			// any other key result, re-prompt
+			continue;
+		}
+
+		memset(wifiId, 0, sizeof(wifiId));
+		memset(wifiPwd, 0, sizeof(wifiPwd));
+		strncpy((char *)wifiId, ssid, sizeof(wifiId) - 1);
+		if (outBuf[0] > 0) {
+			int copyLen = outBuf[0];
+			if (copyLen > (int)(sizeof(wifiPwd) - 1))
+				copyLen = sizeof(wifiPwd) - 1;
+			memcpy(wifiPwd, outBuf + 1, copyLen);
+		}
+
 		MAINLOG_L1("wifi_ap: %s", wifiId);
 		MAINLOG_L1("wifi_pwd: %s", wifiPwd);
 		ScrCls_Api();
 		ScrDisp_Api(1, 0, "Connecting...", LDISP);
 		ret = wifiAPConnect_lib(wifiId, wifiPwd);
-		saveSSID("/ext/ssid.txt",wifiId);
-		saveSSID("/ext/pass.txt",wifiPwd);
-		if(ret == -6323){// incorrect password
-			goto PWD;
+		if (ret == 0) {
+			saveSSID("/ext/ssid.txt", wifiId);
+			saveSSID("/ext/pass.txt", wifiPwd);
+			MAINLOG_L1("wifi_wifiAPConnect_lib_success:%d", ret);
+			AppPlayTip("Connect Successfully");
+			return 0;
 		}
-		MAINLOG_L1("wifi_wifiAPConnect_lib_1:%d", ret);
-		AppPlayTip("Connect Successfully");
-			return ret;
+
+		MAINLOG_L1("wifi_wifiAPConnect_lib_failed:%d", ret);
+		if (security != WIFI_SECURITY_OPEN) {
+			ScrDisp_Api(1, 0, "Invalid password", LDISP);
+			Delay_Api(1000);
+			continue; // retry password
 		}
+		// open wifi failure: allow user retry
+		ScrDisp_Api(1, 0, "Connect failed", LDISP);
+		Delay_Api(1000);
+	}
 }
 
 void saveSSID(param,param2){
